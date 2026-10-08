@@ -4,6 +4,39 @@
 
 ---
 
+## ⚠️ 关于 GitHub 连通性（2026-10-08 实测）
+
+**结论：本机访问 GitHub 时通时不通，但 `git push` 确实能成功。建议 GitHub + Gitee 双远程保底。**
+
+同一天、同一台机器上的实测对照：
+
+| 测试 | 结果 |
+|---|---|
+| `curl https://github.com` | ❌ HTTP **000**（连接被瞬间重置，复测仍为 000） |
+| 百度 / 淘宝镜像 / Gitee | ✅ HTTP 200（稳定） |
+| **`git push -u origin main`** | ✅ **成功**（`* [new branch] main -> main`） |
+
+也就是说：**浏览器打不开 GitHub ≠ git 推不上去。** 本机对 GitHub 属于**间歇性可达**——
+有时 `git push` 会「没有任何输出、一直卡着」，那是在等一个不通的连接。
+**遇到这种情况别急着重敲，等 1~2 分钟或直接重试一次，多半就通了。**
+
+**建议做双推保底**（一个本地仓库可以关联多个远程，互不影响）：
+
+```bash
+# GitHub（当前 origin，已配置）
+git remote add origin https://github.com/liuxudong12/area-econ-metrics.git
+# Gitee（建议新增，国内访问稳定，面试官一定能打开）
+git remote add gitee  https://gitee.com/你的用户名/area-econ-metrics.git
+
+git push -u origin main    # 推到 GitHub
+git push -u gitee  main    # 推到 Gitee
+```
+
+> 简历上**优先放 Gitee 链接**，GitHub 作为补充，两个都给最稳妥。
+> Gitee 认证：输用户名 + 密码；若提示需要令牌，去「Gitee → 设置 → 私人令牌」生成一个当密码用。
+
+---
+
 ## 一、四个概念，一张图记住
 
 ```

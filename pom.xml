@@ -47,6 +47,14 @@
             <version>${mybatis-plus.version}</version>
         </dependency>
 
+        <!-- ★ 3.5.9 起，分页插件（PaginationInnerInterceptor）依赖被拆到这个包里。
+             不加它，用分页会报 ClassNotFoundException / NoClassDefFoundError。 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
+
         <!-- Lombok：@Data / @Slf4j 等，省样板代码 -->
         <dependency>
             <groupId>org.projectlombok</groupId>
