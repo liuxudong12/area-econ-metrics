@@ -1,0 +1,50 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: area-econ-metrics
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 参数一个都不能少：
+    #   useUnicode + characterEncoding  → 中文不乱码
+    #   serverTimezone=Asia/Shanghai    → 否则时间差 8 小时（MySQL 8 经典坑）
+    #   useSSL=false                    → 本地不需要加密连接
+    #   allowPublicKeyRetrieval=true    → MySQL 8 默认认证插件是 caching_sha2_password，
+    #                                     不加这个会报 Public Key Retrieval is not allowed
+    url: jdbc:mysql://localhost:3306/area_econ?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: Root@1234
+
+# MyBatis-Plus 配置（第 2-3 天开始用到）
+mybatis-plus:
+  # Mapper XML 文件的位置
+  mapper-locations: classpath*:/mapper/**/*.xml
+  # 实体类所在包，开启后 Mapper 不用再写 @Mapper 注解也能被扫描到
+  type-aliases-package: com.liuxudong.areaecon.entity
+  configuration:
+    # 数据库下划线字段（region_code）自动映射到 Java 驼峰属性（regionCode）
+    map-underscore-to-camel-case: true
+    # 把执行的 SQL 打印到控制台 —— 学习阶段强烈建议开着，能看清每一步查了什么
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      # 主键策略：数据库自增
+      id-type: auto
+      # 逻辑删除：@TableLogic 识别 deleted 字段
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 日志级别：方便看自己写的 SQL 和参数
+logging:
+  level:
+    com.liuxudong.areaecon: debug
+
+# ============================================================
+# ⚠️ 注意：这只是本地练习库的密码，直接写在这里没问题。
+#    但真项目里数据库密码绝不能提交到 Git。做法二选一：
+#      1) 放到环境变量：password: ${DB_PASSWORD}
+#      2) 新建 application-local.yml 写密码，并加进 .gitignore
+# ============================================================
