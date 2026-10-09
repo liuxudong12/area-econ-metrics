@@ -2,6 +2,7 @@ package com.liuxudong.areaecon.service;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.liuxudong.areaecon.controller.vo.RegionSaveReqVO;
 import com.liuxudong.areaecon.entity.Region;
 
 import java.util.List;
@@ -43,4 +44,26 @@ public interface RegionService extends IService<Region> {
      * 按区域编码查一条。查不到返回 null。
      */
     Region getByCode(String regionCode);
+
+    // ==================== Day 3：写操作 ====================
+
+    /**
+     * 新增区域，返回新记录的 id（自增主键）。
+     *
+     * 业务规则：区域编码不能重复。
+     * 编码重复时抛 BizException，由 GlobalExceptionHandler 转成 {"code":500,"message":"区域编码已存在：xxx"}。
+     *
+     * @param reqVO 新增请求，id 字段会被忽略
+     */
+    Long createRegion(RegionSaveReqVO reqVO);
+
+    /**
+     * 修改区域。id 必填，记录不存在或编码与他人冲突都会抛 BizException。
+     */
+    void updateRegion(RegionSaveReqVO reqVO);
+
+    /**
+     * 删除区域。注意是**逻辑删除**（把 deleted 置为 1），数据仍在表里。
+     */
+    void deleteRegion(Long id);
 }

@@ -2,10 +2,16 @@ package com.liuxudong.areaecon.controller;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.liuxudong.areaecon.common.Result;
+import com.liuxudong.areaecon.controller.vo.RegionSaveReqVO;
 import com.liuxudong.areaecon.entity.Region;
 import com.liuxudong.areaecon.service.RegionService;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -103,5 +109,75 @@ public class RegionController {
             return Result.fail("区域不存在：" + regionCode);
         }
         return Result.ok(region);
+    }
+
+    // ==================== Day 3：写操作 ====================
+    //
+    // 【关于 HTTP 方法和路径的设计（RESTful 风格）】
+    //   查列表   GET    /api/region/list
+    //   查分页   GET    /api/region/page
+    //   查单条   GET    /api/region/{code}
+    //   新增     POST   /api/region
+    //   修改     PUT    /api/region
+    //   删除     DELETE /api/region/{id}
+    //
+    // 同一路径 /api/region 上挂了 POST 和 PUT，靠**HTTP 方法**区分，不会冲突。
+    // 这是 RESTful 的基本约定：路径表示"资源"，方法表示"动作"。
+    //
+    // 【⚠️ 一个必须知道的坑：POST 和 PUT 的重试语义不同】
+    //   POST 不是幂等的 —— 同样的请求发两次，会新增两条数据；
+    //   PUT 是幂等的 —— 同样的请求发两次，结果一样（都是"改成这个值"）。
+    //   所以"新增"必须用 POST，"按 id 整体覆盖更新"用 PUT。
+    //   面试问"幂等"时，这就是最基础的落点。
+
+    /**
+     * 新增区域。
+     *
+     * POST /api/region
+     * Body: {"regionCode":"431400","regionName":"湘潭市","parentCode":"430000","regionLevel":2,"sort":6}
+     *
+     * 【@Valid 的作用】
+     * 没有它，RegionSaveReqVO 上那一堆 @NotBlank / @NotNull 全是摆设 —— Spring 根本不去读。
+     * 有了它，参数不合法时 Spring 会抛 MethodArgumentNotValidException，
+     * 由 GlobalExceptionHandler 转成 {"code":400,"message":"regionName: 区域名称不能为空"}。
+     *
+     * 【@RequestBody 的作用】
+     * 把 HTTP 请求体里的 JSON 反序列化成 Java 对象。
+     * 少了它，Spring 会以为你要从 URL 参数里拼对象，结果是所有字段都是 null。
+     *
+     * 返回新记录的 id，前端拿到后可以直接跳详情页。
+     */
+    @PostMapping
+    public Result<Long> create(@Valid @RequestBody RegionSaveReqVO reqVO) {
+        return Result.ok(regionService.createRegion(reqVO));
+    }
+
+    /**
+     * 修改区域。
+     *
+     * PUT /api/region
+     * Body: {"id":8,"regionCode":"431400","regionName":"湘潭市","parentCode":"430000","regionLevel":2,"sort":6}
+     *
+     * 注意 body 里必须带 id。id 为空会抛 BizException("修改区域时 id 不能为空")。
+     */
+    @PutMapping
+    public Result<Boolean> update(@Valid @RequestBody RegionSaveReqVO reqVO) {
+        regionService.updateRegion(reqVO);
+        return Result.ok(Boolean.TRUE);
+    }
+
+    /**
+     * 删除区域（逻辑删除）。
+     *
+     * DELETE /api/region/8
+     *
+     * 删完再用 GET /api/region/431400 是查不到的（因为查询自动带 deleted = 0），
+     * 但你去数据库里 SELECT * 能看到那一行，只是 deleted 变成了 1。
+     * **这就是逻辑删除最直观的验证方式，建议你亲手做一遍。**
+     */
+    @DeleteMapping("/{id}")
+    public Result<Boolean> delete(@PathVariable Long id) {
+        regionService.deleteRegion(id);
+        return Result.ok(Boolean.TRUE);
     }
 }
