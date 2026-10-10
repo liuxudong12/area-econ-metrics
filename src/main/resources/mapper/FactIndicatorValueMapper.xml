@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  ⚠️ namespace 必须一字不差地等于 Mapper 接口的全限定名。
+     写错 = 启动时报 "Invalid bound statement (not found)"，这是新手第一大坑。
+-->
+<mapper namespace="com.liuxudong.areaecon.mapper.FactIndicatorValueMapper">
+
+    <!--
+      按指标分类汇总各区域的值（大屏最典型的查询）
+
+      逐段解释：
+        SELECT ... AS regionCode
+          给列起别名。别名要和 VO 的字段名对上，否则接不到值（而且不报错，只是 null）。
+        FROM fact_indicator_value f
+          主表：指标值事实表（10 万行，慢就慢在它）
+        JOIN dim_indicator i ON i.indicator_code = f.indicator_code
+          关联指标维表，才能按 category（分类）过滤
+        JOIN dim_region r ON r.region_code = f.region_code
+          关联区域维表，才能拿到区域名称给前端显示
+        WHERE f.deleted = 0 AND i.deleted = 0 AND r.deleted = 0
+          ⚠️ 手写 SQL 时，逻辑删除条件必须**自己加**！
+             这跟 MyBatis-Plus 自动生成的单表查询不一样——
+             它只认实体上的 @TableLogic，你手写的 SQL 它管不了。
+             **忘了加 = 把已删除的数据也算进统计里**，这是非常典型的线上事故。
+             （你之前修过的"统计数量和清单对不上"，很多就是这类问题）
+        AND f.period_type = #{periodType}
+        AND f.period_code IN (...)
+          筛周期。IN 的列表用 <foreach> 拼出来。
+        GROUP BY f.region_code, r.region_name
+          按区域分组。SELECT 里的非聚合列都必须出现在 GROUP BY 里，
+          否则 MySQL 8 在 ONLY_FULL_GROUP_BY 模式下会直接报错。
+        ORDER BY totalValue DESC
+          按别名排序，最大的在前。
+
+      【#{} 和 ${} 的区别（面试高频）】
+        #{}  预编译占位符 → JDBC 的参数绑定 → 能防 SQL 注入   ← 我们全程用这个
+        ${}  字符串直接拼接 → 有注入风险 → 只在拼表名/字段名时才用
+    -->
+    <select id="selectCategorySummary"
+            resultType="com.liuxudong.areaecon.controller.vo.RegionMetricStatVO">
+        SELECT f.region_code          AS regionCode,
+               r.region_name          AS regionName,
+               SUM(f.indicator_value) AS totalValue
+        FROM fact_indicator_value f
+                 JOIN dim_indicator i ON i.indicator_code = f.indicator_code
+                 JOIN dim_region r ON r.region_code = f.region_code
+        WHERE f.deleted = 0
+          AND i.deleted = 0
+          AND r.deleted = 0
+          AND f.period_type = #{periodType}
+          AND i.category = #{category}
+          AND f.period_code IN
+        <foreach collection="periodCodes" item="pc" open="(" separator="," close=")">
+            #{pc}
+        </foreach>
+        GROUP BY f.region_code, r.region_name
+        ORDER BY totalValue DESC
+    </select>
+
+    <!--
+      ★ 第 6-8 天的"慢查询靶子" ★
+
+      按周期汇总某分类的值（大屏趋势折线图）。
+
+      它和上面那条 SQL 的唯一区别：SELECT / GROUP BY 里**没有 region_code**。
+      结果就是 uk_fact 索引用不上（最左列缺失），只能全表扫描 48 万行。
+
+      到时候你会：
+        ① 先执行这段 SQL，用 EXPLAIN 记下 type / key / rows
+        ② 测出耗时（实测约 123ms）
+        ③ 加索引：ALTER TABLE fact_indicator_value
+                   ADD INDEX idx_type_period_indicator (period_type, period_code, indicator_code, region_code);
+        ④ 再跑一遍，看 type 变成 range、耗时掉到个位数毫秒
+
+      那组前后对比数字，就是你简历上"索引优化"那一条。
+    -->
+    <select id="selectPeriodTrend"
+            resultType="com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO">
+        SELECT f.period_code        AS periodCode,
+               SUM(f.indicator_value) AS totalValue
+        FROM fact_indicator_value f
+                 JOIN dim_indicator i ON i.indicator_code = f.indicator_code
+        WHERE f.deleted = 0
+          AND i.deleted = 0
+          AND f.period_type = #{periodType}
+          AND i.category = #{category}
+          AND f.period_code IN
+        <foreach collection="periodCodes" item="pc" open="(" separator="," close=")">
+            #{pc}
+        </foreach>
+        GROUP BY f.period_code
+        ORDER BY f.period_code
+    </select>
+
+</mapper>
