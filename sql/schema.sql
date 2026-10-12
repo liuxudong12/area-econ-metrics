@@ -179,23 +179,35 @@ FROM (SELECT 2021 y UNION SELECT 2022 UNION SELECT 2023 UNION SELECT 2024 UNION 
 
 
 -- =============================================================
--- ★ 第 6-8 天 · 加索引（先别执行！等测完优化前耗时再执行）
+-- ★ 索引优化（已于 2026-10-12 完成，完整实验记录见 sql/04-索引优化实验.sql）
 -- =============================================================
 --
--- 执行前先记录：
---   EXPLAIN SELECT f.region_code, f.period_code, SUM(f.indicator_value)
---   FROM fact_indicator_value f
---   JOIN dim_indicator i ON i.indicator_code = f.indicator_code
---   WHERE f.period_type = 'Y' AND i.category = '工业' AND f.period_code IN ('2024','2025','2026')
---   GROUP BY f.region_code, f.period_code;
---
--- 记录下 type / key / rows 三个字段，以及实际耗时。
--- 然后再执行下面这行，重复上面的 EXPLAIN，做前后对比。
+-- 【最终执行的语句】
 --
 -- ALTER TABLE fact_indicator_value
---   ADD INDEX idx_type_period_indicator (period_type, period_code, indicator_code, region_code);
-
--- 可选进阶（做完基础版可以试）：
--- 1) 试试把索引列顺序换一下，看执行计划有什么变化，为什么
--- 2) 试试能不能做成"覆盖索引"，避免回表
--- 3) 试试 dim_indicator 的 category 上加索引，看有没有效果
+--   ADD INDEX idx_tpi (period_type, period_code, indicator_code);
+--
+-- 【为什么是这三列、这个顺序】
+--   被优化的查询：WHERE period_type='Y' AND period_code IN (...) AND indicator_code IN (...)
+--                 GROUP BY period_code
+--   等值条件在最左（period_type），范围条件其次（period_code），
+--   然后是 JOIN 带过来的等值条件（indicator_code）。
+--   核心原因：**这条 SQL 里没有 region_code**，所以 uk_fact(region_code,...) 的最左列缺失、
+--   用不上；必须新建一个以 period_type 打头的索引。
+--
+-- 【实测效果（489,600 行）】
+--   平均耗时  133.45 ms → 9.66 ms   （13.8 倍）
+--   扫描行数  489,618 → 5,418        （90 倍）
+--   EXPLAIN   type=ALL, key=NULL → type=range, key=idx_tpi
+--   索引占用  27.6 MB → 43.1 MB      （+15.5 MB，这是代价）
+--
+-- 【试过但没选的方案：覆盖索引】
+--   ADD INDEX (period_type, period_code, indicator_code, deleted, indicator_value)
+--   → 4.95 ms（再快 1.8 倍），但索引要多占 6 MB。
+--   多花 6 MB 换 4 毫秒不划算，所以选了更精简的三列索引。
+--
+-- 【还想过但没做的】
+--   1) dim_indicator.category 上加索引 —— 该表只有 18 行，加索引没意义
+--      （**小表不要加索引**，优化器多半直接全表扫，加了反而浪费）
+--   2) 把 deleted 单独加索引 —— 它的基数只有 1（全是 0），毫无区分度
+--      （**区分度太低的列不适合建索引**）
