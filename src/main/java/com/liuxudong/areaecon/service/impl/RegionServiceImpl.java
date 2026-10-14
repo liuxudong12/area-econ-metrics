@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -78,6 +80,22 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         return lambdaQuery()
                 .eq(Region::getRegionCode, regionCode)
                 .one();
+    }
+
+    @Override
+    public List<Region> listByCodes(Collection<String> regionCodes) {
+        // 空集合要提前挡住：MyBatis-Plus 的 in() 遇到空集合会拼出一个不合法/恒假的 IN 子句，
+        // 不同版本行为还不一致（有的直接拼 `IN ()` 报语法错）。
+        // **凡是要拼 IN 的地方，先判空**——这是一条能省掉很多故障的经验。
+        if (regionCodes == null || regionCodes.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // 同样是 lambdaQuery()，框架会自动带上 deleted = 0（因为实体上有 @TableLogic）。
+        // 这一点很重要：**它等价于原来 SQL 里的 `AND r.deleted = 0`**，
+        // 所以改造之后"被逻辑删除的区域不出现在统计结果里"这个语义没有变。
+        return lambdaQuery()
+                .in(Region::getRegionCode, regionCodes)
+                .list();
     }
 
     // ==================== Day 3：写操作 ====================

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.liuxudong.areaecon.controller.vo.RegionSaveReqVO;
 import com.liuxudong.areaecon.entity.Region;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -44,6 +45,21 @@ public interface RegionService extends IService<Region> {
      * 按区域编码查一条。查不到返回 null。
      */
     Region getByCode(String regionCode);
+
+    /**
+     * 【Day 6 新增】按区域编码**批量**查询。
+     *
+     * 用途：统计接口查出"每个区域的汇总值"之后，拿这批编码一次性把区域名称捞回来，
+     * 在 Java 里补到结果上 —— 这样统计 SQL 里就不用 JOIN dim_region 了。
+     *
+     * 【为什么不循环调 getByCode？N+1 问题】
+     * 150 个区域就是 150 次数据库往返。批量查是 1 次。
+     * 这个坑叫 N+1 查询，是面试常问的"你项目里怎么优化性能"的经典答案之一。
+     * 判断标准很简单：**看到 for 循环里写数据库查询，就要警觉。**
+     *
+     * @param regionCodes 区域编码集合，为空时返回空列表（不要拼出 IN () 这种非法 SQL）
+     */
+    List<Region> listByCodes(Collection<String> regionCodes);
 
     // ==================== Day 3：写操作 ====================
 

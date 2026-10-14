@@ -122,10 +122,18 @@ area-econ-metrics/
 
 | 项目 | 优化前 | 优化后 | 测量方式 |
 |---|---|---|---|
-| 大屏聚合接口耗时 | ___ ms | ___ ms | ___ |
-| 大屏接口（加缓存后） | ___ ms | ___ ms | ___ |
-| 慢查询执行计划 | `type=___` `rows=___` | `type=___` `rows=___` | `EXPLAIN` |
-| Excel 导入 1 万行 | ___ ms（同步） | ___ ms（异步返回） | ___ |
+| 趋势接口 `/trend`（按周期汇总） | **133.45 ms**（全表扫 489,618 行） | **9.66 ms**（扫 5,418 行） | `EXPLAIN` + `performance_schema` |
+| 大屏聚合 `/category-summary`（按区域） | **43.38 ms**（600 次点查 + 1,350 次回表） | **10.57 ms**（1 次顺序范围扫描） | `performance_schema`（各 80 次） |
+| 执行计划（`/trend`） | `type=ALL` `key=NULL` `rows=487354` | `type=range` `key=idx_tpi` `rows=5400` | `EXPLAIN` |
+| 接口端到端（HTTP） | —— | category-summary 30.1ms / trend 13.8ms / top-regions 21.4ms / yoy 26.1ms | 40 次请求取后 30 次均值 |
+| 大屏接口（加缓存后） | 待 Day 7 | 待 Day 7 | —— |
+| Excel 导入 1 万行 | 待 Day 9 | 待 Day 9 | —— |
+
+> 两次优化用的是**两把不同的武器**：
+> Day 5 靠**加索引**（把扫描行数从 48.9 万降到 5,418）；
+> Day 6 靠**改 SQL 的 JOIN 结构**（一个索引都没加，扫描行数还从 1,668 涨到 5,568，
+> 但因为从"600 次随机点查"变成"1 次顺序扫描"，反而快了 4.1 倍）。
+> 详细过程见 `sql/04-索引优化实验.sql` 和 `sql/05-JOIN结构优化实验.sql`。
 
 ---
 

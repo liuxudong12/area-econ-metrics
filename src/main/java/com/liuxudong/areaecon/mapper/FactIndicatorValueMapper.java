@@ -3,6 +3,8 @@ package com.liuxudong.areaecon.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionMetricStatVO;
+import com.liuxudong.areaecon.controller.vo.RegionRankVO;
+import com.liuxudong.areaecon.controller.vo.RegionYoyVO;
 import com.liuxudong.areaecon.entity.FactIndicatorValue;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -37,10 +39,16 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *
      * 举例：查"工业"这个分类下，2024/2025/2026 三年，每个区域的总值。
      *
-     * 【它涉及三张表】
-     *   fact_indicator_value  取指标值（大表，10 万行）
-     *   dim_indicator         按 category 筛选指标
-     *   dim_region            取区域名称给前端显示
+     * 【Day 6 改造：这里少 JOIN 了一张表】
+     * 改造前它是 JOIN 三张表（fact + dim_indicator + dim_region），实测 44.3ms。
+     * 改造后去掉了 dim_region，SQL 只负责"算数"，区域名称由 Service 侧批量补上。
+     *
+     * 为什么这样能快 4.6 倍？——把关联顺序从"先关联后聚合"改成"先聚合后关联"：
+     *
+     *   ✗ 改造前：1350 行明细 → 每行都去 dim_region 换名字（1350 次随机回表）→ 再压成 150 行
+     *   ✓ 改造后：1350 行明细 → 先压成 150 行 → 只补 150 个名字（150 次）
+     *
+     * 聚合本来就砍掉 90% 的行，那就该让它**先发生**。
      *
      * 【@Param 的作用】
      * XML 里用 #{category} 取值时，MyBatis 需要一个"名字 → 值"的映射。
@@ -61,7 +69,9 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *
      * 举例：查"工业"这个分类，每年（2024/2025/2026）全省的总值，看走势。
      *
-     * ⚠️ 这个查询是**故意留着的"慢查询"**，第 6-8 天要优化它。
+     * ✅ Day 5 已优化：给 fact_indicator_value 补了 idx_tpi(period_type, period_code, indicator_code)，
+     *    扫描行数 489,618 → 5,418，DB 耗时 133.45ms → 9.66ms。
+     *    但下面这段"它当年为什么慢"的分析照样要会讲 —— 面试考的就是这个思路。
      *
      * 【为什么它比 selectCategorySummary 慢得多？—— 这句话面试能用】
      * 两个查询的表结构是一样的，区别只在于：**select 和 group by 用不用 region_code**。
@@ -83,4 +93,72 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
     List<PeriodMetricStatVO> selectPeriodTrend(@Param("category") String category,
                                                @Param("periodType") String periodType,
                                                @Param("periodCodes") List<String> periodCodes);
+
+    // ==================== Day 6 新增：两个进阶统计接口 ====================
+
+    /**
+     * TOP N 区域排行（大屏"排行榜"用）。
+     *
+     * 举例：查"工业"分类 2024 年，各区域按总值排名，取前 10。
+     *
+     * 【和 selectCategorySummary 的关系】
+     * 它俩的数据来源完全一样（同一张表、同一套过滤条件、同样按区域分组），
+     * 区别只在**结果怎么加工**：
+     *     selectCategorySummary  只返回 code + 总值
+     *     selectTopRegions       额外算出【名次】和【占比】，并且只要前 N 条
+     *
+     * 【Day 6 的新武器：窗口函数】
+     *     RANK() OVER (ORDER BY totalValue DESC)           → 名次
+     *     SUM(totalValue) OVER ()                          → 所有区域的总值（没 GROUP BY 的聚合）
+     *     ROUND(totalValue / SUM(totalValue) OVER () * 100, 2)  → 占比
+     *
+     * 「OVER ()」里什么都不写 = 整个结果集当做一个窗口，这跟 GROUP BY 是**两码事**：
+     *     GROUP BY 会把多行压成一行（行数变少）
+     *     窗口函数**不改行数**，只是给每行多挂一列计算结果
+     * 所以你要"分组汇总后又想看到明细"，就用窗口函数 —— 这正是排行的场景。
+     *
+     * ⚠️ 为什么有个子查询 t？
+     *     MySQL 不允许在 WHERE / 同一层 SELECT 里直接用 SUM() 的结果做算术后再排序取前 N，
+     *     所以先在子查询里把"每个区域的总值"算出来，外层再用窗口函数加工。
+     *     这是 SQL 的"执行顺序"决定的（FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY），
+     *     SELECT 里的别名，同一层的 ORDER BY 能用，但窗口函数里就不能直接引用聚合别名。
+     *
+     * @param topN 取前几名，如 10
+     */
+    List<RegionRankVO> selectTopRegions(@Param("category") String category,
+                                        @Param("periodType") String periodType,
+                                        @Param("periodCodes") List<String> periodCodes,
+                                        @Param("topN") Integer topN);
+
+    /**
+     * 各区域的同比增长（同比 / 环比通用）。
+     *
+     * 举例：查"工业"分类，2025 年 vs 2024 年，每个区域的增长情况。
+     *
+     * 【核心技术点：条件聚合（Conditional Aggregation）】
+     * 一条 SQL 同时算出"当期值"和"基期值"两个指标：
+     *
+     *     SUM(CASE WHEN period_code = '2025' THEN indicator_value ELSE 0 END) AS currentValue
+     *     SUM(CASE WHEN period_code = '2024' THEN indicator_value ELSE 0 END) AS baseValue
+     *
+     * 加点缩进看清楚它在干什么：
+     *     SUM(  CASE WHEN 周期 = 当期 THEN 值 ELSE 0 END  )
+     *     └─ 外层还是 SUM  └─ 但只把"符合条件的那些行"的值累加起来
+     *
+     * 【为什么不用查两次库？】
+     * 两个值来自**同一批数据、同一个 WHERE**，只是口径不同。
+     * 分两次查 = 两倍 I/O + 两倍网络 + 两次结果要自己在 Java 里按 region_code 拼起来对不齐的风险。
+     * 一次扫表同时算出多个口径，是数据统计里非常常用的手法。
+     *
+     * ⚠️ ELSE 0 不能省：如果某个区域在基期没有数据，CASE 不写 ELSE 会返回 NULL，
+     *    整个 SUM 遇到 NULL 的结果取决于其他行，容易埋坑。写 ELSE 0 让语义明确。
+     *
+     * 【注意增长额和增长率不在这里算】
+     * 它们在 Service 层用 BigDecimal 算（有除零、精度、舍入三个坑要处理）。
+     * SQL 只管"取数"，业务计算放 Java —— 这样换数据库也不用改逻辑。
+     */
+    List<RegionYoyVO> selectRegionYoy(@Param("category") String category,
+                                      @Param("periodType") String periodType,
+                                      @Param("basePeriod") String basePeriod,
+                                      @Param("currentPeriod") String currentPeriod);
 }

@@ -11,59 +11,91 @@
     <!--
       按指标分类汇总各区域的值（大屏最典型的查询）
 
-      逐段解释：
+      ⚠️ Day 6 改造：这里**去掉了 JOIN dim_region**，只 JOIN dim_indicator。
+         区域名称改由 Service 层批量查一次补上（见 StatServiceImpl.categorySummary）。
+
+      【改造前 vs 改造后 —— 一条 SQL 的两种写法，差 4.6 倍】
+        ✗ 改造前（44.3 ms）：
+            JOIN dim_region 写在里面 → MySQL 的执行顺序是
+            1350 行明细 → 每行都去 dim_region 换区域名（1350 次随机回表）→ 再聚合压成 150 行
+        ✓ 改造后（9.52 ms）：
+            1350 行明细 → 先聚合压成 150 行 → 只补 150 个区域名（150 次查询）
+
+        一句话原理：**聚合会砍掉 90% 的行，那就该让它先发生。**
+        把维表关联推迟到聚合之后，回表次数从 1350 降到 150。
+
+      【EXPLAIN ANALYZE 实测（MySQL 8.0.46，同一台机器）】
+        改造前：Nested loop inner join  (actual time=0.273..42.8)   ← 42.8ms 全花在这
+        改造后：Index range scan on f using idx_tpi (actual time=0.336..7.84)  ← 7.8ms 扫完
+        两者返回的 totalValue 前五名一字不差（已校验）。
+
+      【逐段解释】
         SELECT ... AS regionCode
           给列起别名。别名要和 VO 的字段名对上，否则接不到值（而且不报错，只是 null）。
         FROM fact_indicator_value f
-          主表：指标值事实表（10 万行，慢就慢在它）
+          主表：指标值事实表（49 万行，慢就慢在它）。
+          改造后走 idx_tpi 索引做 range 扫描，只碰 5,418 行。
         JOIN dim_indicator i ON i.indicator_code = f.indicator_code
-          关联指标维表，才能按 category（分类）过滤
-        JOIN dim_region r ON r.region_code = f.region_code
-          关联区域维表，才能拿到区域名称给前端显示
-        WHERE f.deleted = 0 AND i.deleted = 0 AND r.deleted = 0
+          关联指标维表，才能按 category（分类）过滤。
+          它只有 18 行，全表扫 + hash join 是**最优解**，不用为它优化。
+        WHERE f.deleted = 0 AND i.deleted = 0
           ⚠️ 手写 SQL 时，逻辑删除条件必须**自己加**！
              这跟 MyBatis-Plus 自动生成的单表查询不一样——
              它只认实体上的 @TableLogic，你手写的 SQL 它管不了。
              **忘了加 = 把已删除的数据也算进统计里**，这是非常典型的线上事故。
              （你之前修过的"统计数量和清单对不上"，很多就是这类问题）
-        AND f.period_type = #{periodType}
-        AND f.period_code IN (...)
-          筛周期。IN 的列表用 <foreach> 拼出来。
-        GROUP BY f.region_code, r.region_name
-          按区域分组。SELECT 里的非聚合列都必须出现在 GROUP BY 里，
-          否则 MySQL 8 在 ONLY_FULL_GROUP_BY 模式下会直接报错。
+        GROUP BY f.region_code
+          只按编码分组 —— 改造前这里还要带上 r.region_name，
+          因为 SELECT 里的非聚合列必须出现在 GROUP BY 里（ONLY_FULL_GROUP_BY 模式的要求）。
+          现在不关联区域表了，自然也不用按名字分组。
         ORDER BY totalValue DESC
           按别名排序，最大的在前。
 
       【#{} 和 ${} 的区别（面试高频）】
         #{}  预编译占位符 → JDBC 的参数绑定 → 能防 SQL 注入   ← 我们全程用这个
         ${}  字符串直接拼接 → 有注入风险 → 只在拼表名/字段名时才用
+
+      【⚠️ 改造 SQL 时最容易翻车的不是语法，是边界语义】
+        改造前 `JOIN dim_region ... AND r.deleted = 0` 隐含一条规则：
+        **被逻辑删除的区域不会出现在结果里**。
+        改造后这条 SQL 会把已删除区域也聚合出来（因为没人拦它了）。
+        所以 Service 侧补名字时，**Map 里找不到对应区域的记录会被丢弃** ——
+        这样才和原语义等价。改写 SQL 时一定要问自己：
+        "原来的那些 JOIN / WHERE，除了过滤数据，还偷偷承担了什么语义？"
     -->
     <select id="selectCategorySummary"
             resultType="com.liuxudong.areaecon.controller.vo.RegionMetricStatVO">
         SELECT f.region_code          AS regionCode,
-               r.region_name          AS regionName,
                SUM(f.indicator_value) AS totalValue
         FROM fact_indicator_value f
                  JOIN dim_indicator i ON i.indicator_code = f.indicator_code
-                 JOIN dim_region r ON r.region_code = f.region_code
         WHERE f.deleted = 0
           AND i.deleted = 0
-          AND r.deleted = 0
           AND f.period_type = #{periodType}
           AND i.category = #{category}
           AND f.period_code IN
         <foreach collection="periodCodes" item="pc" open="(" separator="," close=")">
             #{pc}
         </foreach>
-        GROUP BY f.region_code, r.region_name
+        GROUP BY f.region_code
         ORDER BY totalValue DESC
     </select>
 
     <!--
-      ★ 第 6-8 天的"慢查询靶子" ★
+      ★ Day 5 已治好的"慢查询" ★
 
       按周期汇总某分类的值（大屏趋势折线图）。
+
+      优化前：type=ALL, key=NULL, rows=487354，DB 耗时 133.45 ms（全表扫 48 万行）
+      优化后：type=range, key=idx_tpi, rows=5400，DB 耗时 9.66 ms
+      改动：  ALTER TABLE fact_indicator_value
+                ADD INDEX idx_tpi (period_type, period_code, indicator_code);
+
+      ⚠️ 关键：这条 SQL 一个字都没改，只补了个索引就快了 13.8 倍。
+         "优化 SQL" 和 "优化索引" 是两回事，你在 Day 5 / Day 6 各碰到一种：
+           · selectPeriodTrend     → 加索引   （问题是"扫描的行太多"）
+           · selectCategorySummary → 改结构   （问题是"回表次数太多"）
+         面试时能讲清这两种的区别，说明你是真在做优化，而不是套模板背答案。
 
       它和上面那条 SQL 的唯一区别：SELECT / GROUP BY 里**没有 region_code**。
       结果就是 uk_fact 索引用不上（最左列缺失），只能全表扫描 48 万行。
@@ -93,6 +125,121 @@
         </foreach>
         GROUP BY f.period_code
         ORDER BY f.period_code
+    </select>
+
+    <!--
+      ============ Day 6 新增 · 大屏"排行榜" TOP N ============
+
+      需求：某分类、某周期下，各区域按总值排名，取前 N 名，还要给出名次和占比。
+
+      【核心：窗口函数 Window Function】
+        RANK() OVER (ORDER BY t.totalValue DESC)                  → 名次
+        SUM(t.totalValue) OVER ()                                 → 所有区域的总值
+        ROUND(t.totalValue / SUM(t.totalValue) OVER () * 100, 2)  → 占比(%)
+
+      「OVER ()」括号里什么都不写 = 把整个结果集当成一个窗口来算。
+      这跟 GROUP BY 是**两码事**，区别必须搞清（面试常问）：
+        GROUP BY  → 把多行**压成一行**，结果行数变少（150 行 → 150 个区域，只是明细没了）
+        窗口函数  → **不改行数**，只是给每一行额外挂一列计算结果
+
+      所以"分组汇总之后，我还想同时看到组内明细 / 与整体的对比"，就用窗口函数。
+
+      【为什么外面要套一层子查询 t？】
+        MySQL 的执行顺序是：FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY
+        SELECT 里的聚合结果（SUM(...) AS totalValue）在同一层的窗口函数里**不能直接引用**。
+        所以：先在子查询里把"每个区域的总值"算出来，外层再把 t 当成一张普通表做窗口计算。
+        经验：**窗口函数套在聚合结果之上时，套子查询是最省心的写法。**
+
+      【RANK / DENSE_RANK / ROW_NUMBER 三兄弟（必考）】
+        假设三个区域的值是 100 / 100 / 90：
+          ROW_NUMBER()   → 1, 2, 3    不管值是否相同，就是硬编号
+          RANK()         → 1, 1, 3    并列占名次，后面**跳号**
+          DENSE_RANK()   → 1, 1, 2    并列占名次，后面**不跳号**
+        这里选 RANK()：业务上"并列第 1 名，下一名是第 3 名"符合排行榜的直觉。
+
+      【LIMIT #{topN} 的一个认知点】
+        LIMIT 是**最后**才生效的。它不会让 MySQL 少干活——
+        150 个区域该聚合还得全聚合完、该排序还得全排完，只是最后只吐 10 行出来。
+        所以"加 LIMIT 就变快"是错觉；真要让数据库少干活，得在 WHERE 上做文章。
+    -->
+    <select id="selectTopRegions"
+            resultType="com.liuxudong.areaecon.controller.vo.RegionRankVO">
+        SELECT t.regionCode,
+               t.totalValue,
+               RANK() OVER (ORDER BY t.totalValue DESC)                 AS rankNo,
+               ROUND(t.totalValue / SUM(t.totalValue) OVER () * 100, 2) AS share
+        FROM (
+                 SELECT f.region_code          AS regionCode,
+                        SUM(f.indicator_value) AS totalValue
+                 FROM fact_indicator_value f
+                          JOIN dim_indicator i ON i.indicator_code = f.indicator_code
+                 WHERE f.deleted = 0
+                   AND i.deleted = 0
+                   AND f.period_type = #{periodType}
+                   AND i.category = #{category}
+                   AND f.period_code IN
+                 <foreach collection="periodCodes" item="pc" open="(" separator="," close=")">
+                     #{pc}
+                 </foreach>
+                 GROUP BY f.region_code
+             ) t
+        ORDER BY t.totalValue DESC
+        LIMIT #{topN}
+    </select>
+
+    <!--
+      ============ Day 6 新增 · 同比增长 YoY ============
+
+      需求：某分类下，每个区域"当期值 vs 基期值"，以及增长额、增长率。
+
+      【核心：条件聚合 Conditional Aggregation】
+        两个 SUM，长的几乎一样，只差 case when 里的条件：
+
+          SUM(CASE WHEN f.period_code = '2025' THEN f.indicator_value ELSE 0 END)  → 当期值
+          SUM(CASE WHEN f.period_code = '2024' THEN f.indicator_value ELSE 0 END)  → 基期值
+
+        拆开看它在干嘛：
+          SUM(   CASE WHEN 周期 = 当期  THEN 值  ELSE 0  END   )
+          ↑      └──────── 只挑出"这一档"的值，别的都当 0 ────────┘
+          然后把这批值加起来
+
+        **一次扫表，同时算出多个口径** —— 这是数据统计里最常用的手法之一。
+
+      【为什么不查两次库？】
+        两个值来自同一批数据、同一个 WHERE、同一次扫描，只是"分档"不同。
+        分两次查的代价：两倍 I/O、两倍网络往返，而且回到 Java 还得按 region_code 把两边拼起来，
+        某个区域一边有一边没有时很容易对不齐。**能用一条 SQL 算完的，别拆成两条。**
+
+      【⚠️ ELSE 0 千万别省】
+        不写 ELSE 时 CASE 返回 NULL，SUM 里混进 NULL 虽然不会算错（SUM 会跳过 NULL），
+        但语义就变模糊了：你分不清"这个区域当期真的是 0"和"当期压根没数据"。
+        写 ELSE 0 表达的是"**没数据视作 0**"，这是明确的口径声明。
+        真实项目里这个区别很要命 —— 财务口径对不上，往往就差在这。
+
+      【索引用得怎么样】
+        period_type = ? 是等值，period_code IN (?, ?) 是范围，正好是
+        idx_tpi(period_type, period_code, indicator_code) 的最左两列 → 走 range 扫描。
+        这就是 Day 5 那个索引的"副产品价值"：**新写的统计 SQL 也自动沾光了**。
+        这说明索引设计要考虑的是"这一类查询"，而不是"这一条查询"。
+
+      【增长额和增长率为什么不在这里算？】
+        放在 Service 层用 BigDecimal 算。理由：SQL 只管取数，业务计算交给 Java，
+        以后换数据库 / 换写法都不用重写业务逻辑。而且除零、精度、舍入这三件事在 SQL 里更不好控制。
+    -->
+    <select id="selectRegionYoy"
+            resultType="com.liuxudong.areaecon.controller.vo.RegionYoyVO">
+        SELECT f.region_code AS regionCode,
+               SUM(CASE WHEN f.period_code = #{currentPeriod} THEN f.indicator_value ELSE 0 END) AS currentValue,
+               SUM(CASE WHEN f.period_code = #{basePeriod} THEN f.indicator_value ELSE 0 END)    AS baseValue
+        FROM fact_indicator_value f
+                 JOIN dim_indicator i ON i.indicator_code = f.indicator_code
+        WHERE f.deleted = 0
+          AND i.deleted = 0
+          AND f.period_type = #{periodType}
+          AND i.category = #{category}
+          AND f.period_code IN (#{currentPeriod}, #{basePeriod})
+        GROUP BY f.region_code
+        ORDER BY f.region_code
     </select>
 
 </mapper>
