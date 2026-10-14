@@ -5,6 +5,36 @@ spring:
   application:
     name: area-econ-metrics
 
+  # ============================================================
+  # Day 7：Redis 缓存配置
+  # ============================================================
+  # ⚠️ 配置路径的坑（Spring Boot 2 → 3 的一处破坏性变更）：
+  #   Spring Boot 2.x： spring.redis.host
+  #   Spring Boot 3.x： spring.data.redis.host   ← 多了 .data 这一层
+  # 写成老路径不会报错，只是**配置完全不生效**，然后连到默认的 localhost:6379。
+  # 本地刚好也是 localhost:6379，所以你甚至发现不了 —— 但换成服务器地址就崩了。
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      # 用哪个库（0~15）。不同库之间的 key 互相看不见，可以用 SELECT 切换。
+      # 本地练习用 0 就行；真项目常按用途分库，比如 0 放业务缓存、1 放会话。
+      database: 0
+      # 连接超时。Redis 是内存数据库，正常响应在 1ms 以内，
+      # 设 3 秒是"实在连不上就别死等"的保护，避免请求线程被拖死。
+      timeout: 3000ms
+      lettuce:
+        pool:
+          # 最大连接数（正在被使用的 + 空闲的，上限）
+          max-active: 16
+          # 最大空闲连接数（空闲连接超过这个数会被回收）
+          max-idle: 8
+          # 最小空闲连接数（低于它就提前建好，避免"用到时才建"的抖动）
+          min-idle: 2
+          # 池里没连接可用时，最多等多久。给 2000ms 是为了**快速失败**，
+          # 而不是无限等待把 Tomcat 线程全占满。
+          max-wait: 2000ms
+
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     # 参数一个都不能少：

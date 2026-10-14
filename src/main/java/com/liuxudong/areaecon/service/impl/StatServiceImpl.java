@@ -1,5 +1,6 @@
 package com.liuxudong.areaecon.service.impl;
 
+import com.liuxudong.areaecon.cache.StatCacheHelper;
 import com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionRankVO;
@@ -47,6 +48,35 @@ import java.util.Map;
  *   ① 应用层可以"一次查 150 个"，回表次数从 1350 降到 150，总 I/O 真的变少了；
  *   ② 区域维表只有 150 行、几乎不变，是典型的"字典数据"，本来就该往内存/缓存放（Day 7 更明显）；
  *   ③ 拆开之后，SQL 只剩下"纯聚合"，更容易看懂、更容易单独加索引优化。
+ *
+ * ============================================================================
+ * Day 7 的改动：四个统计方法都套上了一层 Redis 缓存
+ * ============================================================================
+ *
+ * 【改造手法：把每个方法一劈两半】
+ *
+ *      public List<X> xxx(...) {                  ← 对外：只管缓存
+ *          String key = ...;
+ *          return cache.getList(key, X.class, () -> loadXxx(...));
+ *      }
+ *      private List<X> loadXxx(...) { ... }       ← 私有：原来的查库逻辑，一字未改
+ *
+ * 这个改法有三个好处：
+ *   ① **对调用方零影响** —— 接口签名没动，Controller 一行都不用改；
+ *   ② **原来的逻辑完全没动** —— 查库那段代码原封不动搬进私有方法，不担心改坏；
+ *   ③ **读代码时层次分明** —— "有没有缓存"看 public 方法，"怎么查"看 private 方法。
+ *
+ * 【为什么缓存加在 Service 层，而不加在 Controller 层？】
+ *   ① Controller 的职责是"接参数、转结果"，不该管数据从哪来；
+ *   ② 同一个查询可能被多个 Controller 调用（比如大屏接口和报表导出都用它），
+ *      加在 Service 才能被全部复用；
+ *   ③ 万一以后加个定时任务预热缓存，也能直接调 Service。
+ *   一句话：**缓存是数据访问策略，属于数据层的事。**
+ *
+ * 【今天只做"读"，"写"明天做】
+ * 现在缓存只能被手动删。如果 dim_region 或 fact_indicator_value 被改了，
+ * 缓存里的旧数据最多会"脏"到 TTL 到期（600 秒）。这在生产上不可接受，
+ * Day 8 专门解决 —— 这正是"缓存一致性"要讲的东西。
  */
 @Service
 public class StatServiceImpl implements StatService {
@@ -56,9 +86,10 @@ public class StatServiceImpl implements StatService {
 
     private final FactIndicatorValueMapper factIndicatorValueMapper;
     private final RegionService regionService;
+    private final StatCacheHelper cache;
 
     /**
-     * 【构造器注入两个依赖】
+     * 【构造器注入三个依赖】
      * 这里多了一个 RegionService —— 因为要补区域名称，得能查 dim_region。
      *
      * 【为什么不直接注入 RegionMapper？】
@@ -70,15 +101,37 @@ public class StatServiceImpl implements StatService {
      * 【会不会造成循环依赖？】
      * 不会。StatServiceImpl → RegionService，而 RegionService 不依赖 StatService，没有环。
      * （真要出现 A→B→A，Spring 会启动报错，那时再考虑 @Lazy 或抽公共层。）
+     *
+     * Day 7 又多了一个 StatCacheHelper —— 缓存能力的来源。
+     * 注意它也**不反向依赖** StatService，所以同样没有环。
      */
     public StatServiceImpl(FactIndicatorValueMapper factIndicatorValueMapper,
-                           RegionService regionService) {
+                           RegionService regionService,
+                           StatCacheHelper cache) {
         this.factIndicatorValueMapper = factIndicatorValueMapper;
         this.regionService = regionService;
+        this.cache = cache;
     }
 
     @Override
     public List<RegionMetricStatVO> categorySummary(String category, String periodType, List<String> periodCodes) {
+        // 对外只做一件事：拼 key、交给缓存助手。
+        // 注意 lambda 里调的是 loadCategorySummary —— 那段查库逻辑整个搬到了下面的私有方法，
+        // 一行都没改。这样"加缓存"这个动作对原有逻辑是**零风险**的。
+        String key = StatCacheHelper.buildKey(
+                "category-summary", category, periodType, StatCacheHelper.joinSorted(periodCodes));
+        return cache.getList(key, RegionMetricStatVO.class,
+                () -> loadCategorySummary(category, periodType, periodCodes));
+    }
+
+    /**
+     * 原 categorySummary 的全部逻辑（Day 6 改造过的那版），现在改成私有方法。
+     *
+     * ⚠️ 注意这个方法**不要标 @Override** —— 它不在 StatService 接口里，
+     *    是纯粹的内部实现细节。改成 private 而不是 public，也是为了让调用方
+     *    只能通过带缓存的入口进来，绕不过缓存。
+     */
+    private List<RegionMetricStatVO> loadCategorySummary(String category, String periodType, List<String> periodCodes) {
         // 第一步：SQL 只干"算数"这一件事（不含 dim_region）
         List<RegionMetricStatVO> rows = factIndicatorValueMapper.selectCategorySummary(category, periodType, periodCodes);
 
@@ -109,9 +162,20 @@ public class StatServiceImpl implements StatService {
 
     @Override
     public List<PeriodMetricStatVO> categoryTrend(String category, String periodType, List<String> periodCodes) {
+        String key = StatCacheHelper.buildKey(
+                "trend", category, periodType, StatCacheHelper.joinSorted(periodCodes));
+        return cache.getList(key, PeriodMetricStatVO.class,
+                () -> loadCategoryTrend(category, periodType, periodCodes));
+    }
+
+    private List<PeriodMetricStatVO> loadCategoryTrend(String category, String periodType, List<String> periodCodes) {
         // 就是这一行。Day 5 之前它是全表扫描 48 万行、133ms；
         // 加完 idx_tpi 索引后，代码一个字没改，耗时降到 9.66ms。
         // 这就是"优化 SQL 和索引，而不是改代码"的典型场景。
+        //
+        // Day 7 再套上缓存：索引解决"查得快"，缓存解决"根本不用查"。
+        // 两者是**接力**关系，不是二选一 —— 索引让未命中的那一次也不慢，
+        // 缓存让之后的 99 次不碰数据库。**面试时一定要把这两句连起来说。**
         return factIndicatorValueMapper.selectPeriodTrend(category, periodType, periodCodes);
     }
 
@@ -119,6 +183,19 @@ public class StatServiceImpl implements StatService {
 
     @Override
     public List<RegionRankVO> topRegions(String category, String periodType, List<String> periodCodes, Integer topN) {
+        // ⚠️⚠️ key 里必须带上 topN。
+        //    "前 5 名"和"前 10 名"是**两份不同的结果**，如果 key 不带 topN，
+        //    先查了 topN=5、缓存住 5 条，后面查 topN=10 会直接拿到那 5 条 —— 
+        //    不报错、不告警，只有用户会发现"我要 10 个怎么只给 5 个"。
+        //    **缓存串数据的头号原因就是"key 少带了参数"。**
+        //    口诀：**凡是会影响 SQL 结果的入参，一个都不能漏进 key。**
+        String key = StatCacheHelper.buildKey("top-regions", category, periodType,
+                StatCacheHelper.joinSorted(periodCodes), String.valueOf(topN));
+        return cache.getList(key, RegionRankVO.class,
+                () -> loadTopRegions(category, periodType, periodCodes, topN));
+    }
+
+    private List<RegionRankVO> loadTopRegions(String category, String periodType, List<String> periodCodes, Integer topN) {
         // 名次（rankNo）和占比（share）都由 SQL 里的窗口函数算好了，Java 只负责补区域名。
         // 这是今天第二个"该怎么分工"的决定点：
         //   · 名次 / 占比 → 交给 SQL。因为它们依赖"全量数据集"（尤其是占比的分母），
@@ -149,6 +226,26 @@ public class StatServiceImpl implements StatService {
 
     @Override
     public List<RegionYoyVO> regionYoy(String category, String periodType, String basePeriod, String currentPeriod) {
+        // ⚠️⚠️ 这里有个**必须讲清楚的区别**，和上面 joinSorted 的用法正好相反：
+        //
+        //   · periodCodes 是"一组平级的周期"，[2024,2025] 和 [2025,2024] 结果一样
+        //     → 所以可以排序、可以当成集合，用 joinSorted；
+        //   · basePeriod / currentPeriod 是"两个**角色不同**的参数"——
+        //     一个是分母、一个是分子！**绝对不能排序、不能互换**。
+        //     如果写成 joinSorted(List.of(basePeriod, currentPeriod))，
+        //     那么 (基期=2025, 当期=2024) 和 (基期=2024, 当期=2025) 会拼出同一个 key，
+        //     第二次请求会命中第一次的缓存 —— 增长率直接算反（+20% 变成 -20%），
+        //     而且**接口不报错**。这类 bug 在生产上极其难查。
+        //
+        //   所以：**参数在语义上有角色时，一律按固定位置拼进 key，不要排序、不要去重。**
+        //   判断标准就一句：把两个值交换一下，SQL 的结果会不会变？会变 → 不能排序。
+        String key = StatCacheHelper.buildKey(
+                "yoy", category, periodType, basePeriod, currentPeriod);
+        return cache.getList(key, RegionYoyVO.class,
+                () -> loadRegionYoy(category, periodType, basePeriod, currentPeriod));
+    }
+
+    private List<RegionYoyVO> loadRegionYoy(String category, String periodType, String basePeriod, String currentPeriod) {
         List<RegionYoyVO> rows = factIndicatorValueMapper.selectRegionYoy(category, periodType, basePeriod, currentPeriod);
 
         // 逐行算增长额和增长率。

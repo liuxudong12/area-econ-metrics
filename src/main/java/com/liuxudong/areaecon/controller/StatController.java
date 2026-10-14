@@ -1,5 +1,6 @@
 package com.liuxudong.areaecon.controller;
 
+import com.liuxudong.areaecon.cache.StatCacheHelper;
 import com.liuxudong.areaecon.common.BizException;
 import com.liuxudong.areaecon.common.Result;
 import com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO;
@@ -46,9 +47,11 @@ public class StatController {
     private static final int MAX_TOP_N = 100;
 
     private final StatService statService;
+    private final StatCacheHelper cache;
 
-    public StatController(StatService statService) {
+    public StatController(StatService statService, StatCacheHelper cache) {
         this.statService = statService;
+        this.cache = cache;
     }
 
     /**
@@ -189,6 +192,37 @@ public class StatController {
         }
 
         return Result.ok(statService.regionYoy(category, periodType, basePeriod.trim(), currentPeriod.trim()));
+    }
+
+    // ==========================================================================
+    // 【Day 7 新增】缓存观测接口
+    // ==========================================================================
+
+    /**
+     * 看一眼缓存累计命中率。
+     *
+     * 例子：
+     *   GET /api/stat/cache-stats
+     *   → {"code":0,"msg":"success","data":"hit=187 miss=13 命中率=93.5%"}
+     *
+     * 【为什么值得专门做一个接口？】
+     * 因为**缓存没生效的时候，系统看起来一切正常** —— 接口能返回正确结果，
+     * 只是每次都悄悄查了一遍库。没有命中率这个数字，你根本不知道缓存有没有在干活。
+     * "加缓存后要能观测命中率"，是缓存落地的必备动作，不是可选项。
+     *
+     * 【这个实现有什么问题？】
+     * 计数在 JVM 内存里（AtomicLong），所以：
+     *   · 服务重启就清零；
+     *   · 多实例部署时，每个实例各算各的，看到的只是"本实例"的命中率。
+     * 生产环境正确做法是接 **Micrometer + Prometheus**（或 Redis 的 INFO 命令），
+     * 让指标集中采集。这里手写一个是为了让你看得见原理。
+     *
+     * ⚠️ 真实项目里这种内部统计接口应该加权限控制，或者干脆只在测试环境暴露 ——
+     *    对外暴露监控数据属于信息泄露。
+     */
+    @GetMapping("/cache-stats")
+    public Result<String> cacheStats() {
+        return Result.ok(cache.stats());
     }
 
     // ==========================================================================

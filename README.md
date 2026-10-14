@@ -126,14 +126,17 @@ area-econ-metrics/
 | 大屏聚合 `/category-summary`（按区域） | **43.38 ms**（600 次点查 + 1,350 次回表） | **10.57 ms**（1 次顺序范围扫描） | `performance_schema`（各 80 次） |
 | 执行计划（`/trend`） | `type=ALL` `key=NULL` `rows=487354` | `type=range` `key=idx_tpi` `rows=5400` | `EXPLAIN` |
 | 接口端到端（HTTP） | —— | category-summary 30.1ms / trend 13.8ms / top-regions 21.4ms / yoy 26.1ms | 40 次请求取后 30 次均值 |
-| 大屏接口（加缓存后） | 待 Day 7 | 待 Day 7 | —— |
+| 大屏接口（加 Redis 缓存） | MISS **23.3 ms**（查库） | HIT **5.37 ms**（缓存层自身仅 0.68 ms） | 各 25 次请求取均值 |
+| 缓存命中期间数据库访问 | —— | **50 次请求，SQL 条数 = 0** | `performance_schema` 账本 |
+| 缓存命中率 | —— | 93.4%（hit=240 / miss=17） | `/api/stat/cache-stats` |
 | Excel 导入 1 万行 | 待 Day 9 | 待 Day 9 | —— |
 
-> 两次优化用的是**两把不同的武器**：
+> 三次优化用的是**三把不同的武器**：
 > Day 5 靠**加索引**（把扫描行数从 48.9 万降到 5,418）；
 > Day 6 靠**改 SQL 的 JOIN 结构**（一个索引都没加，扫描行数还从 1,668 涨到 5,568，
-> 但因为从"600 次随机点查"变成"1 次顺序扫描"，反而快了 4.1 倍）。
-> 详细过程见 `sql/04-索引优化实验.sql` 和 `sql/05-JOIN结构优化实验.sql`。
+> 但因为从"600 次随机点查"变成"1 次顺序扫描"，反而快了 4.1 倍）；
+> Day 7 靠**不查数据库**（Redis 缓存，命中时 SQL 条数为 0）。
+> 详细过程见 `sql/04`、`sql/05` 和 `docs/00-第7天操作手册.md`。
 
 ---
 

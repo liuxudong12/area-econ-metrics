@@ -68,6 +68,25 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- ★ Day 7：Redis。
+             spring-boot-starter-data-redis 自带客户端实现 Lettuce（默认），
+             所以这里**不需要**再单独引 lettuce-core。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- ★ Day 7：Lettuce 连接池的实现依赖，**必须显式加**。
+             不加会怎样？—— application.yml 里写的 spring.data.redis.lettuce.pool.*
+             会被**静默忽略**（不报错！），Lettuce 走它默认的"全应用复用一条连接"模式。
+             你以为配了池、其实没配，是缓存的经典假配置坑。
+             判断标准很简单：启动日志里 pool 相关的配置压根不会出现。
+             版本由 Spring Boot 父 POM 统一管理，不用写版本号。 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+
         <!-- 测试 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
