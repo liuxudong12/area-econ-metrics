@@ -19,6 +19,14 @@ target/
 .DS_Store
 Thumbs.db
 
+# ===== Day 9：Excel 导入的文件落地目录 =====
+# 这些是运行时产物（用户上传的文件），不该进仓库：
+#   ① 体积会越来越大，把仓库撑爆；
+#   ② 里面是业务数据，可能含敏感信息；
+#   ③ 用 tools/gen-import-excel.py 随时能重新生成测试数据。
+# 目录会在程序启动时用 Files.createDirectories 自动创建，不用提交空目录。
+data/import/
+
 # ===== 本地私密配置（密码等）=====
 application-local.yml
 application-local.properties

@@ -241,5 +241,49 @@
         GROUP BY f.region_code
         ORDER BY f.region_code
     </select>
+    <!--
+      ==================== Day 9：批量插入 ====================
+
+      这条 SQL 长这样（假设 list 里有 3 条）：
+        INSERT INTO fact_indicator_value
+            (region_code, indicator_code, period_code, period_type, indicator_value, data_source)
+        VALUES
+            ('430102', '2-1', '2027-01', 'M', 1234.5000, '导入'),
+            ('430102', '2-2', '2027-01', 'M',  567.0000, '导入'),
+            ('430102', '2-3', '2027-01', 'M',  890.1200, '导入')
+
+      【<foreach> 的三个关键属性】
+        collection="list"  要遍历的集合。Mapper 方法用了 @Param("list")，所以写 list。
+                           （如果不写 @Param，MyBatis 对单个 List 参数默认名是 list / collection，
+                             都能用，但这属于"靠默认值"，建议永远显式 @Param。）
+        item="item"        循环变量名，下面 #{item.xxx} 用它取值。
+        separator=","      每个元素之间用什么分隔 —— 这里必须是逗号，
+                           拼成 VALUES (...), (...), (...) 的形式。
+
+      【为什么 values 里没有 id / create_time / update_time / deleted】
+        - id：自增，不用给
+        - create_time / update_time：表定义里 DEFAULT CURRENT_TIMESTAMP，数据库自动填
+        - deleted：DEFAULT 0，自动填
+      只给"业务字段"赋值，这是插入语句的常规做法。
+
+      【⚠️ 空列表会拼出非法 SQL】
+        如果 list 是空集合，<foreach> 什么都不产出，SQL 变成：
+            INSERT INTO fact_indicator_value (...) VALUES
+        结尾挂着 VALUES 却没有值 → 直接语法错误。
+        **调用方必须先判空**（Service 里做了）。
+
+      【⚠️ 批量插入不走 MyBatis-Plus 的 @TableLogic】
+        deleted 字段这里不写，靠数据库默认值 0，没有问题。
+        但记住这条规律：凡是手写 SQL，逻辑删除条件都得自己管。
+    -->
+    <insert id="insertBatch">
+        INSERT INTO fact_indicator_value
+            (region_code, indicator_code, period_code, period_type, indicator_value, data_source)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.regionCode}, #{item.indicatorCode}, #{item.periodCode},
+             #{item.periodType}, #{item.indicatorValue}, #{item.dataSource})
+        </foreach>
+    </insert>
 
 </mapper>

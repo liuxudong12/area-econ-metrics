@@ -161,4 +161,35 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
                                       @Param("periodType") String periodType,
                                       @Param("basePeriod") String basePeriod,
                                       @Param("currentPeriod") String currentPeriod);
+
+    // ==================== Day 9 新增：Excel 导入的批量写入 ====================
+
+    /**
+     * 批量插入指标值。一条 SQL 插 N 行，而不是 N 条 SQL 各插一行。
+     *
+     * 【这条 SQL 是 Day 9 性能对比的核心】
+     * 同步导入 1 万行如果用逐行插入（for 循环调 BaseMapper.insert），
+     * 就是 1 万次：
+     *   应用 → 网络 → MySQL 解析 SQL → 执行 → 返回 → 应用
+     * 每次往返哪怕只有 0.5ms，1 万次也是 5 秒起步，实际加上索引维护会更久。
+     *
+     * 而这条 SQL 一次能插 500 行 —— 1 万行只需要 20 次往返。
+     * 实测差距见 docs/00-第9天操作手册.md。
+     *
+     * ⚠️ 为什么不是"一次插 1 万行"？三方面限制：
+     *   ① MySQL 的 max_allowed_packet 默认 64MB，一条 SQL 太大会被拒；
+     *   ② 单条 SQL 太长，解析和事务日志（undo/redo）都会变大，回滚成本高；
+     *   ③ 一整批失败时，500 行的重试代价远小于 1 万行。
+     *   500 是工程上的经验值，不是理论最优 —— 这个数字能讲清楚就行。
+     *
+     * ⚠️ 批量插入的"原子性边界"要清楚：
+     *   这 500 行要么全成功、要么全失败（同一条 SQL 就是一个隐式事务）。
+     *   所以如果第 1 行和第 480 行撞了唯一索引 uk_fact，整批 500 行都进不去。
+     *   这就是为什么"导入要能重试"的前提是"导入必须幂等"——
+     *   否则重试一次还是撞同一批，永远成功不了。
+     *
+     * @param list 待插入的记录，调用方负责保证它不为空（空列表会拼出非法 SQL）
+     * @return 实际插入的行数
+     */
+    int insertBatch(@Param("list") List<FactIndicatorValue> list);
 }
