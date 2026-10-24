@@ -276,6 +276,76 @@
         deleted 字段这里不写，靠数据库默认值 0，没有问题。
         但记住这条规律：凡是手写 SQL，逻辑删除条件都得自己管。
     -->
+
+    <!--
+      ==================== Day 10：从"插入"升级为"重入" ====================
+
+      【问题：一条 INSERT，让"重试"变成永远不可能成功】
+
+        假设导入 1 万行、每 500 行一批，共 20 批。跑到第 11 批时数据库连接断了：
+            第 1~10 批已提交 → 5000 行躺在表里
+            第 11 批抛异常     → 任务 FAILED，success_rows=5000
+
+        此时用户点"重试"，如果还是纯 INSERT：
+            第 1 批 → 前 500 行里有一部分一定撞 uk_fact(region_code, indicator_code, period_code)
+                   → 整批 500 行全部回滚 → 又失败 → 又重试 → 又失败
+        死循环。**这个文件永远导不进去。**
+
+      【解法：ON DUPLICATE KEY UPDATE —— 把"重复"从错误变成正常分支】
+
+        INSERT ... ON DUPLICATE KEY UPDATE 的语义是：
+            能插就插；撞了唯一索引就**改成执行后面的 UPDATE**。
+        所以同一份数据跑 1 遍和跑 100 遍，结果完全一样 —— 这叫**幂等**。
+
+        这就是那句话的出处：
+            **"可重试"的前提是"可重入"。**
+        不可重入的操作（纯 INSERT、扣库存、发短信）套上重试框架，
+        只会把"失败一次"变成"失败四次"，还把问题放大。
+
+      【SET 子句里每一项为什么这么写】
+
+        period_type = VALUES(period_type)
+            period_type 不在 uk_fact 里（uk 只有 region/indicator/period_code），
+            说明它是"冗余描述字段"。重复导入时以**最后一次**为准，跟着更新。
+
+        indicator_value = VALUES(indicator_value)
+            这一条是 upsert 的真正意义：数据修正后重新导入，值会被覆盖。
+            （如果业务要求"导入的历史值不许改"，这里就必须去掉这一行，
+              或者加 AND indicator_value IS NULL，那是另一种语义，想清楚再定。）
+
+        data_source = VALUES(data_source)
+            同上，标记这行最后一次是"导入"来的。
+
+        deleted = 0    ★ 这一行最容易漏，而且漏了是"静默错误"
+            唯一索引 uk_fact **不包含 deleted 字段**。
+            所以一行被逻辑删除后（deleted=1），它的唯一键还占着位置。
+            再来导入同一组 (region, indicator, period) 会撞索引 → 走 UPDATE 分支。
+            如果 SET 里不写 deleted=0，这行就**永远保持 deleted=1** ——
+            SQL 不报错、接口返回成功、用户查询结果里却看不到这条数据。
+            这种"不报错的错"在线上最难查。
+
+      【⚠️ 返回值语义变了，别拿它当"写入行数"用】
+
+        纯 INSERT 返回 500 表示插了 500 行。
+        但 ON DUPLICATE KEY UPDATE 的 affected rows 是这样算的（MySQL 官方规则）：
+            插入一行        → 计 1
+            更新一行        → 计 2（先逻辑删除再插入，所以算两下）
+            命中但值没变    → 计 0
+        批量时这些数字会**混在一起累加**，你根本没法反推真实行数。
+        所以 ImportServiceImpl 里的 `written` 是自己在事务提交后手数批次数，
+        **不信 SQL 返回值** —— 这是个必须讲清的细节。
+
+      【副作用：AUTO_INCREMENT 会跳号】
+        每次撞索引都会消耗一个自增 id（即使走了 UPDATE 分支）。
+        所以反复导入后 id 会变得不连续。这不是 bug，是 InnoDB 的固有行为，
+        真实项目里也不要依赖"id 连续"做任何业务判断。
+
+      【MySQL 8.0.19+ 的新写法】
+            INSERT INTO t (...) VALUES (...) AS new
+            ON DUPLICATE KEY UPDATE c = new.c
+        官方已把 VALUES(col) 标为 deprecated（还能用，会出 warning）。
+        这里保留 VALUES() 是为了兼容老版本 + 面试官最熟悉这种写法。
+    -->
     <insert id="insertBatch">
         INSERT INTO fact_indicator_value
             (region_code, indicator_code, period_code, period_type, indicator_value, data_source)
@@ -284,6 +354,11 @@
             (#{item.regionCode}, #{item.indicatorCode}, #{item.periodCode},
              #{item.periodType}, #{item.indicatorValue}, #{item.dataSource})
         </foreach>
+        ON DUPLICATE KEY UPDATE
+            period_type     = VALUES(period_type),
+            indicator_value = VALUES(indicator_value),
+            data_source     = VALUES(data_source),
+            deleted         = 0
     </insert>
 
 </mapper>

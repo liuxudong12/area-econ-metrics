@@ -2,6 +2,7 @@ package com.liuxudong.areaecon.controller.vo;
 
 import lombok.Data;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -42,6 +43,24 @@ public class ImportResultVO {
 
     /** 本次实际使用的批大小：1 = 逐行插入，500 = 批量插入。用来做性能对比实验 */
     private Integer batchSize;
+
+    /**
+     * Day 10 新增：已重试次数。
+     *
+     * 为什么要把这个暴露给前端？
+     * 因为"失败 1 次后自动重试"和"失败 3 次即将放弃"是**完全不同的用户预期**。
+     * 前者用户会安心等，后者用户该考虑去检查数据库了。
+     * 只给一个 status=RETRY_WAIT，用户根本不知道还要等多久、还有几次机会。
+     */
+    private Integer retryCount;
+
+    /**
+     * Day 10 新增：下次重试的时间点（只有 RETRY_WAIT 状态有值）。
+     *
+     * 前端可以据此显示倒计时："3 秒后自动重试"。
+     * 比笼统的"请稍候"体验好得多 —— **能给出确定的等待时长，用户就不会焦虑。**
+     */
+    private LocalDateTime nextRetryTime;
 
     /** 给前端/用户看的一句话提示 */
     private String message;

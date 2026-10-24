@@ -97,4 +97,29 @@ public class ImportController {
     public Result<ImportResultVO> getTask(@PathVariable("taskId") Long taskId) {
         return Result.ok(importService.getTask(taskId));
     }
+
+    /**
+     * Day 10 新增：手动重试一个失败的任务。
+     *
+     * 【自动重试都有了，为什么还要这个接口】
+     * 自动重试只处理"临时故障"，且最多 3 次（累计等待 7 秒）。
+     * 超过之后任务就永久 FAILED 了。但很多时候问题在于**环境**，
+     * 而不是数据：数据库在维护、连接池被临时打满、磁盘满了被清理 ——
+     * 等运维处理完（可能是半小时后），数据本身完全没问题，只是需要一个"再来一次"的按钮。
+     *
+     * 没有这个接口，用户只能重新上传同一个文件 ——
+     * 但 MD5 没变，会被幂等逻辑拦下来，直接返回那个 FAILED 的旧任务。
+     * **用户会以为系统坏了。** 这就是手动重试接口存在的价值。
+     *
+     * 【幂等性】
+     * 同一个任务连续点两次：第一次成功改状态并投递，第二次会因为
+     * 状态已经是 PENDING 而返回"任务已在队列中" —— 不会重复导入。
+     *
+     * @param taskId 任务 ID
+     */
+    @PostMapping("/task/{taskId}/retry")
+    public Result<ImportResultVO> retryTask(@PathVariable("taskId") Long taskId) {
+        log.info("[导入-手动重试] taskId={}", taskId);
+        return Result.ok(importService.retryTask(taskId));
+    }
 }

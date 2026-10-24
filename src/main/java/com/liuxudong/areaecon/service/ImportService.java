@@ -55,4 +55,32 @@ public interface ImportService {
      * @param taskId 异步接口返回的任务 ID
      */
     ImportResultVO getTask(Long taskId);
+
+    /**
+     * 把一条已落库的任务投递到线程池 —— 供重试调度器使用（Day 10）。
+     *
+     * 【为什么调度器不自己调线程池，非要绕一层接口？】
+     * 因为"怎么执行一个任务"（解析、分批、事务、失败分类）是 ImportService 的内部知识。
+     * 调度器只需要说一句"这条该跑了"，不应该关心实现。
+     *
+     * 如果哪天把执行引擎换成消息队列（RabbitMQ / RocketMQ），
+     * 只需要改这个方法的实现，调度器一行都不用动 —— 这就是接口的价值。
+     *
+     * @param taskId 任务 ID
+     * @throws java.util.concurrent.RejectedExecutionException 队列满时抛出，
+     *         由调用方决定"退回等待"还是"直接报错"
+     */
+    void dispatch(Long taskId);
+
+    /**
+     * 手动重试（Day 10）—— 把 FAILED / RETRY_WAIT 的任务重新投递。
+     *
+     * 【和自动重试的分工】
+     *   自动重试：只处理"临时故障"，退避 1/2/4 秒，最多 3 次，全自动
+     *   手动重试：由人触发，retry_count 归零，等于给任务一次全新的机会
+     *
+     * @param taskId 任务 ID
+     * @return 重试后的任务状态（PENDING）
+     */
+    ImportResultVO retryTask(Long taskId);
 }

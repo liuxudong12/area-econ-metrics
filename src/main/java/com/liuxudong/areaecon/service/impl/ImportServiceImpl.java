@@ -2,8 +2,10 @@ package com.liuxudong.areaecon.service.impl;
 
 import com.alibaba.excel.EasyExcel;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.StringUtils;
 import com.liuxudong.areaecon.common.BizException;
+import com.liuxudong.areaecon.common.RetryableImportException;
 import com.liuxudong.areaecon.config.ImportThreadPoolConfig;
 import com.liuxudong.areaecon.controller.vo.FactImportRow;
 import com.liuxudong.areaecon.controller.vo.ImportResultVO;
@@ -17,7 +19,10 @@ import com.liuxudong.areaecon.service.ImportService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +33,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
@@ -72,6 +78,51 @@ public class ImportServiceImpl implements ImportService {
 
     @Value("${stat.import.dir:./data/import}")
     private String importDir;
+
+    // ==========================================================================
+    // Day 10 新增：重试相关的三个配置
+    // ==========================================================================
+
+    /**
+     * 最多重试几次（不含第一次执行）。
+     *
+     * maxRetry=3 的含义是"总共最多跑 4 次"：首次 + 3 次重试。
+     * 为什么是 3？—— 退避总时长是 1+2+4=7 秒，用户还等得起。
+     * 如果设成 10，累计等待 1+2+4+8+...+512 ≈ 17 分钟，用户早就关页面了。
+     * **重试次数的上限不是技术问题，是"用户愿意等多久"的问题。**
+     */
+    @Value("${stat.import.retry.max-retry:3}")
+    private int maxRetry;
+
+    /**
+     * 退避时间表（秒）。第 N 次失败后等 backoffSeconds[N] 秒再试。
+     *
+     * 1,2,4 是"指数退避"（每次翻倍）加上封顶 —— 实际上这里长度只有 3，
+     * 等于 maxRetry 次重试用完了，所以没体现封顶。真实项目常见的是
+     * 1,2,4,8,16,...,60（封顶 60 秒），避免重试次数多时等待时间爆炸。
+     *
+     * 为什么是指数而不是固定 1 秒？
+     * 因为"临时故障"通常有恢复过程：数据库连接池要重建、被 kill 的实例要重启、
+     * 上游服务要摘掉故障节点。固定 1 秒会在这段时间里疯狂无效重试，
+     * 反而给已经过载的系统加压（这叫"重试风暴"）。
+     * 指数退避的直觉：**越失败越说明对方还没好，就越该少打扰它。**
+     */
+    @Value("${stat.import.retry.backoff-seconds:1,2,4}")
+    private long[] backoffSeconds;
+
+    /**
+     * 【实验用】故障注入：跑到第几批时强制失败。-1 表示关闭。
+     *
+     * 这是为了做 Day 10 的对照组实验 —— 没有它就没法复现
+     * "第 10 批写完、第 11 批断了"这个真实场景，也就拿不出"重试前 vs 重试后"的数字。
+     *
+     * ⚠️ 生产环境必须保持 -1。它默认就是 -1，不配就不会生效。
+     *    真实项目里这类开关一般放在 test profile 里，或者用混沌工程工具
+     *    （ChaosBlade / ToxiProxy）在基础设施层注入，不写进业务代码。
+     *    这里写进来是因为：自建项目要让面试官看到"我知道怎么验证它"。
+     */
+    @Value("${stat.import.test.fail-at-batch:-1}")
+    private int failAtBatch;
 
     public ImportServiceImpl(FactIndicatorValueMapper factIndicatorValueMapper,
                              AsyncTaskMapper asyncTaskMapper,
@@ -262,6 +313,100 @@ public class ImportServiceImpl implements ImportService {
         return buildResult(task);
     }
 
+    /**
+     * 把一条已经落库的任务投递到线程池。
+     *
+     * 【为什么单独暴露这个方法，而不是让调度器自己 new 线程？】
+     * 因为"怎么跑一个任务"是 ImportService 的内部知识（runTask 是 private）。
+     * 调度器只应该知道"这条任务该跑了，你帮它排上队"，
+     * 不应该知道"要不要加事务""解析用哪个 Listener""失败怎么分类"。
+     *
+     * **调用方只需要一个语义动作，实现细节不外泄** —— 这就是接口存在的意义。
+     *
+     * 抛出的 RejectedExecutionException 由调用方处理：
+     *   - importAsync 里：直接告诉用户"系统繁忙"（用户会自己重试上传）
+     *   - 调度器里：把任务退回 RETRY_WAIT 再等一轮（不能判死刑，队列满了不是数据的错）
+     *
+     * @param taskId 任务 ID
+     */
+    @Override
+    public void dispatch(Long taskId) {
+        importExecutor.execute(() -> runTask(taskId));
+    }
+
+    /**
+     * 手动重试 —— 用户/运维在任务 FAILED 之后"再来一次"。
+     *
+     * 【为什么需要手动重试？自动重试不是已经有了吗】
+     * 因为自动重试只能处理"临时故障"，而下面这些情况需要人来判断：
+     *   · 数据库恢复后，昨天失败的那批数据要补进去
+     *   · 用户改好了 Excel 里的错误行，重新上传 —— 但文件 MD5 变了？
+     *     不，改了内容 MD5 就变了，会建新任务。真正需要重试的是"数据没改，
+     *     当时是环境问题"的那一批
+     *   · 运维临时扩了连接池，想把积压的失败任务一次性冲掉
+     *
+     * 【为什么要把 retry_count 归零？】
+     * 自动重试的 retry_count 是"这一轮尝试的次数"。
+     * 用户手动重试是**重新发起**，等于开了新的一轮，计数自然归零。
+     * 如果不归零，一个失败过 3 次的任务手动重试后，
+     * 下一次再遇到临时故障就直接 FAILED 了 —— 用户会莫名其妙："我刚点的重试啊"。
+     *
+     * 【为什么只允许 FAILED / RETRY_WAIT】
+     *   SUCCESS  → 已经成功了，再跑一遍纯属浪费
+     *   RUNNING  → 正在跑，两个线程同时跑就是重复导入
+     *   PENDING  → 已经在队列里了，重试会把队列里的那份变成僵尸投递
+     * 用 `where status in ('FAILED','RETRY_WAIT')` 做抢占，
+     * 和 runTask 里抢 PENDING 是同一个套路 —— **状态机迁移必须带前置条件**。
+     */
+    @Override
+    public ImportResultVO retryTask(Long taskId) {
+        if (taskId == null) {
+            throw new BizException("taskId 不能为空");
+        }
+        AsyncTask task = asyncTaskMapper.selectById(taskId);
+        if (task == null) {
+            throw new BizException("任务不存在：" + taskId);
+        }
+
+        // 先做一次友好提示（不是并发保护，只是让报错信息好看点）
+        if (AsyncTaskStatus.SUCCESS.equals(task.getStatus())) {
+            throw new BizException("该任务已经成功，无需重试");
+        }
+        if (AsyncTaskStatus.RUNNING.equals(task.getStatus())) {
+            throw new BizException("该任务正在执行中，请稍后再看结果");
+        }
+        if (AsyncTaskStatus.PENDING.equals(task.getStatus())) {
+            throw new BizException("该任务已在队列中，无需重复提交");
+        }
+
+        int updated = asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, taskId)
+                        .in(AsyncTask::getStatus, AsyncTaskStatus.FAILED, AsyncTaskStatus.RETRY_WAIT)
+                        .set(AsyncTask::getStatus, AsyncTaskStatus.PENDING)
+                        .set(AsyncTask::getRetryCount, 0)
+                        .set(AsyncTask::getNextRetryTime, null));
+
+        // 真正的并发保护：上面 select 完之后，可能别的线程已经把它改成 RUNNING 了
+        if (updated == 0) {
+            throw new BizException("任务状态已变化，当前不允许重试，请刷新后查看");
+        }
+
+        try {
+            dispatch(taskId);
+        } catch (RejectedExecutionException e) {
+            markFailed(taskId, "系统繁忙：导入队列已满，请稍后重试");
+            log.warn("[导入-手动重试] 线程池拒绝 taskId={}", taskId);
+            throw new BizException("系统繁忙，导入任务较多，请稍后重试");
+        }
+
+        log.info("[导入-手动重试] 已重新投递 taskId={} 之前失败次数={} 历史原因={}",
+                taskId, task.getRetryCount(), task.getErrorMsg());
+
+        // 重新查一次库，把最新的 PENDING 状态返回给前端
+        return getTask(taskId);
+    }
+
     // ==========================================================================
     // 三、后台真正干活的部分
     // ==========================================================================
@@ -290,19 +435,46 @@ public class ImportServiceImpl implements ImportService {
             return;
         }
 
-        // 抢占式更新：只有 PENDING 的任务才能变 RUNNING。
-        // 用 update ... where status='PENDING' 而不是直接 updateById，
-        // 是为了防止"同一任务被投递了两次"时两个线程同时跑（重复导入）。
-        // 这里用了一个 MyBatis-Plus 的小技巧：EntityWrapper 里的 eq 会拼进 where 条件。
-        AsyncTask running = new AsyncTask();
-        running.setStatus(AsyncTaskStatus.RUNNING);
-        running.setNextRetryTime(null);
-        int locked = asyncTaskMapper.update(running,
-                new LambdaQueryWrapper<AsyncTask>()
+        // ==================================================================
+        // 抢占式更新：只有"还没被谁抢走"的任务才能变成 RUNNING
+        // ==================================================================
+        // 为什么不能直接 updateById？
+        //   同一个任务有可能被投递两次，三种真实场景：
+        //     ① 调度器刚把它从 RETRY_WAIT 改成 PENDING 并投递，
+        //        同一瞬间用户又点了"立即重试"
+        //     ② 多实例部署时，两台机器的调度器同时扫到同一条到期任务
+        //     ③ 线程池拒绝后重新入队，而老线程其实还活着
+        //   如果两个线程都跑，就是"同一份文件导两遍"。
+        //
+        //   用 `update ... where status in (...)` 做抢占：数据库保证只有一个
+        //   线程能把它改成 RUNNING（affected=1），另一个拿到 0。
+        //   这是**无锁互斥**，比 synchronized / Redis 锁都轻 ——
+        //   因为"判断 + 修改"在同一条 SQL 里原子完成（UPDATE 会加行锁）。
+        //
+        // ★ Day 10 顺手修了 Day 9 的一个隐蔽 bug：
+        //   原来写的是
+        //       AsyncTask running = new AsyncTask();
+        //       running.setStatus(RUNNING);
+        //       running.setNextRetryTime(null);          // ← 以为能清空
+        //       asyncTaskMapper.update(running, wrapper);
+        //   但 MyBatis-Plus 的 update 默认字段策略是 **NOT_NULL**：
+        //   实体里为 null 的字段**不会进 SET 子句**。
+        //   所以 next_retry_time 根本没被清空，旧值一直挂着。
+        //
+        //   这类 bug 的可怕之处：不报错、不抛异常、接口正常返回。
+        //   表现是"重试成功的任务，next_retry_time 还留在过去某个时刻"，
+        //   运维查表时会误判"它还在等重试"，白查半天。
+        //
+        //   修法：改用 LambdaUpdateWrapper 显式 .set(字段, null)。
+        //   —— "想写 null 就必须显式声明"是 MyBatis-Plus 的一条铁律。
+        int locked = asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getId, taskId)
-                        .eq(AsyncTask::getStatus, AsyncTaskStatus.PENDING));
+                        .in(AsyncTask::getStatus, AsyncTaskStatus.PENDING, AsyncTaskStatus.RETRY_WAIT)
+                        .set(AsyncTask::getStatus, AsyncTaskStatus.RUNNING)
+                        .set(AsyncTask::getNextRetryTime, null));
         if (locked == 0) {
-            log.warn("[导入-异步] 任务状态不是 PENDING，跳过执行 taskId={} status={}",
+            log.warn("[导入-异步] 任务已被别人抢走或状态不允许执行，跳过 taskId={} status={}",
                     taskId, task.getStatus());
             return;
         }
@@ -334,33 +506,211 @@ public class ImportServiceImpl implements ImportService {
             writeAllInBatches(allRows, defaultBatchSize, written);
 
             long elapsed = System.currentTimeMillis() - start;
-            AsyncTask success = new AsyncTask();
-            success.setId(taskId);
-            success.setStatus(AsyncTaskStatus.SUCCESS);
-            success.setTotalRows(allRows.size());
-            success.setSuccessRows(allRows.size());
-            success.setErrorMsg("");
-            asyncTaskMapper.updateById(success);
 
-            log.info("[导入-异步] 执行成功 taskId={} 总行数={} 耗时={}ms",
-                    taskId, allRows.size(), elapsed);
+            // 成功落账。这里同样用 UpdateWrapper 而不是 updateById，原因见上面那段
+            // —— error_msg 和 next_retry_time 都要写成 null，updateById 写不进去。
+            //
+            // ★ 注意 retry_count **不清零**：它记录"这个任务历史上失败过几次"，
+            //   是排查问题的证据。只有用户手动重试（retryTask）才会归零，
+            //   因为那是"人重新发起了这件事"，语义上是新的开始。
+            asyncTaskMapper.update(null,
+                    new LambdaUpdateWrapper<AsyncTask>()
+                            .eq(AsyncTask::getId, taskId)
+                            .set(AsyncTask::getStatus, AsyncTaskStatus.SUCCESS)
+                            .set(AsyncTask::getTotalRows, allRows.size())
+                            .set(AsyncTask::getSuccessRows, allRows.size())
+                            .set(AsyncTask::getErrorMsg, null)
+                            .set(AsyncTask::getNextRetryTime, null));
+
+            log.info("[导入-异步] 执行成功 taskId={} 总行数={} 耗时={}ms 历史失败次数={}",
+                    taskId, allRows.size(), elapsed,
+                    task.getRetryCount() == null ? 0 : task.getRetryCount());
 
         } catch (Exception e) {
-            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            log.error("[导入-异步] 执行失败 taskId={} 已写入={}行 原因={}", taskId, written.get(), msg, e);
-
-            AsyncTask failed = new AsyncTask();
-            failed.setId(taskId);
-            failed.setStatus(AsyncTaskStatus.FAILED);
-            failed.setTotalRows((int) listener.getTotalRows());
-            // ★ 这里必须用 written（真实提交行数），不能用 listener.getHandledRows()。
-            //   handledRows 是"解析出多少行"，跟"写进去多少行"完全是两回事。
-            //   早期版本写错了，导致"校验失败、一行没写"的任务却显示 successRows=1，
-            //   用户看到"成功 1 行 / 失败"会彻底懵掉。
-            failed.setSuccessRows(written.get());
-            failed.setErrorMsg(truncate(msg, ERROR_MSG_MAX));
-            asyncTaskMapper.updateById(failed);
+            // ★ 所有失败都收敛到一个地方处理：分类 → 重试 / 终结。
+            //   为什么不在 catch 里直接 sleep 然后重试？见 handleFailure 的注释。
+            handleFailure(task, listener.getTotalRows(), written.get(), e);
         }
+    }
+
+    /**
+     * ==========================================================================
+     * Day 10 核心：失败之后到底怎么办
+     * ==========================================================================
+     *
+     * 【★ 为什么不在 catch 里 sleep 1 秒然后自己重跑？—— 这是最容易写错的地方】
+     *
+     * 直觉写法：
+     *     catch (Exception e) {
+     *         for (int i = 0; i < 3; i++) {
+     *             sleep(1000);
+     *             try { doImport(); return; } catch (Exception ignore) {}
+     *         }
+     *     }
+     * 这段代码在**单线程脚本**里是对的，在我们的线程池里是三重灾难：
+     *
+     *   ① 白白占着线程
+     *      线程池 core=4。4 个任务都在 sleep 3 秒，等于 4 个线程全部瘫痪，
+     *      第 5 个用户上传的文件连"接单"都排不上。
+     *      **sleep 的线程和干活的线程是同一种资源，睡一秒就是浪费一秒的并发能力。**
+     *
+     *   ② 服务一重启，重试就没了
+     *      重试的"计划"只存在于栈帧里。发版、OOM、断电 —— 全部丢失。
+     *      用户还在轮询 taskId，永远等不到结果。
+     *
+     *   ③ 没法观测、没法干预
+     *      运营想知道"现在有几个任务在等重试"，答案在某个线程的 for 循环里，
+     *      你查不出来，也没法让它"立刻重试"或"别重试了"。
+     *
+     * 正确做法（本方法）：
+     *     把"什么时候重试"**写进数据库**（status=RETRY_WAIT + next_retry_time），
+     *     线程立刻释放，去干别的活。
+     *     到点了由调度器扫出来重新投递（见 ImportRetryScheduler）。
+     *
+     * 一句话：**重试的"记忆"必须落库，不能留在内存里。**
+     * 这和 Day 9"线程池只干活、任务表才记账"是同一条原则的延伸。
+     *
+     * ==========================================================================
+     * 【为什么是 RETRY_WAIT 而不是直接改回 PENDING】
+     * ==========================================================================
+     * 如果直接改回 PENDING，next_retry_time 到了之前，谁去投递它？
+     * 没人 —— importAsync 早就返回了，没有第二个入口。
+     * 所以必须有一个"等待态"让调度器有东西可扫。
+     * （也可以复用 PENDING + next_retry_time 非空，但那样状态含义就模糊了，
+     *   运维看表分不清"刚建单"和"失败等重试"，见 AsyncTaskStatus 的注释。）
+     *
+     * @param task      失败时的任务快照（注意：retry_count 用的是快照里的值，
+     *                  而不是重新查库 —— 因为这个任务只可能被当前线程持有，
+     *                  抢占式 update 已经保证了排他性）
+     * @param totalRows 解析出的总行数
+     * @param written   本次真正提交成功的行数
+     * @param e         原始异常
+     */
+    private void handleFailure(AsyncTask task, long totalRows, int written, Exception e) {
+        Long taskId = task.getId();
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        int retried = task.getRetryCount() == null ? 0 : task.getRetryCount();
+
+        boolean retryable = isRetryable(e);
+        boolean canRetry = retryable && retried < maxRetry;
+
+        if (canRetry) {
+            // 取退避表里的第 retried 项（retried 从 0 开始，所以第一次失败取 backoff[0]=1 秒）
+            long delay = backoffSeconds[Math.min(retried, backoffSeconds.length - 1)];
+            LocalDateTime next = LocalDateTime.now().plusSeconds(delay);
+
+            String historyMsg = truncate("第 " + (retried + 1) + " 次执行失败（" + delay
+                    + " 秒后自动重试）：" + msg, ERROR_MSG_MAX);
+
+            asyncTaskMapper.update(null,
+                    new LambdaUpdateWrapper<AsyncTask>()
+                            .eq(AsyncTask::getId, taskId)
+                            .set(AsyncTask::getStatus, AsyncTaskStatus.RETRY_WAIT)
+                            .set(AsyncTask::getRetryCount, retried + 1)
+                            .set(AsyncTask::getNextRetryTime, next)
+                            .set(AsyncTask::getTotalRows, (int) totalRows)
+                            .set(AsyncTask::getSuccessRows, written)
+                            .set(AsyncTask::getErrorMsg, historyMsg));
+
+            log.warn("[导入-重试] taskId={} 第 {} 次执行失败，{} 秒后重试（剩余重试 {}/{}）。"
+                            + "本次已提交 {} 行，下次将从文件开头重跑（upsert 保证不重复）。原因={}",
+                    taskId, retried + 1, delay, maxRetry - retried - 1, maxRetry,
+                    written, msg);
+            return;
+        }
+
+        // ---------- 走到这里：要么不可重试，要么次数用完了 ----------
+        String reason;
+        if (!retryable) {
+            reason = msg;
+            log.error("[导入-失败] taskId={} 遇到不可重试的错误，不再重试。已写入={}行 原因={}",
+                    taskId, written, msg, e);
+        } else {
+            reason = "已重试 " + retried + " 次仍失败：" + msg;
+            log.error("[导入-失败] taskId={} 重试次数用尽（{}次）。已写入={}行 原因={}",
+                    taskId, retried, written, msg, e);
+        }
+
+        asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, taskId)
+                        .set(AsyncTask::getStatus, AsyncTaskStatus.FAILED)
+                        .set(AsyncTask::getNextRetryTime, null)
+                        .set(AsyncTask::getTotalRows, (int) totalRows)
+                        // ★ 必须用 written（真实提交行数），不能用 listener.getHandledRows()。
+                        //   handledRows 是"解析出多少行"，跟"写进去多少行"完全是两回事。
+                        //   早期版本写错了，导致"校验失败、一行没写"的任务却显示 successRows=1，
+                        //   用户看到"成功 1 行 / 失败"会彻底懵掉。
+                        .set(AsyncTask::getSuccessRows, written)
+                        .set(AsyncTask::getErrorMsg, truncate(reason, ERROR_MSG_MAX)));
+    }
+
+    /**
+     * 【异常分类器】判断这个异常"再试一次有没有意义"。
+     *
+     * 判断顺序很关键：**先判不可重试，再判可重试**。
+     * 因为 Spring 的异常有继承关系，父类判断会把子类一起吃掉：
+     *   DataIntegrityViolationException（唯一索引冲突、字段超长）是 DataAccessException 的子类，
+     *   如果先判 `instanceof DataAccessException → return true`，
+     *   唯一的索引冲突就会被误判成"可重试"，然后重试 3 次全撞同一批，纯浪费时间。
+     *
+     * 遍历 cause 链（最多 5 层）是因为框架喜欢套娃：
+     *   EasyExcel 会把 IO 异常包进 ExcelAnalysisException，
+     *   Spring 的 TransactionTemplate 会把业务异常包进 TransactionSystemException。
+     *   真实原因往往藏在第三四层。
+     *
+     * 判据只有一句：**换个时间点重试，结果会不会变？**
+     *   会变 → 可重试；不会变 → 不可重试。
+     */
+    private boolean isRetryable(Throwable e) {
+        Throwable cur = e;
+        for (int depth = 0; depth < 5 && cur != null; depth++) {
+
+            // ---------- 第一类：确定性失败，重试一万次结果一样 ----------
+            if (cur instanceof BizException) {
+                // 数据校验不通过、行数超限、表头不对 —— 这些是"文件内容"的问题
+                return false;
+            }
+            if (cur instanceof NoSuchFileException) {
+                // 落盘的文件被人删了 / 磁盘挂载丢了。重试也不会自己长回来
+                return false;
+            }
+            if (cur instanceof DataIntegrityViolationException) {
+                // 包含 DuplicateKeyException（撞唯一索引）、字段超长、非空约束。
+                // ⚠️ 这条必须排在 DataAccessException 判断**之前**
+                return false;
+            }
+            if (cur instanceof BadSqlGrammarException) {
+                // SQL 写错了（表名/字段名拼错、语法错误）。这是代码 bug，重试无意义
+                return false;
+            }
+
+            // ---------- 第二类：临时故障，过一会儿很可能就好了 ----------
+            if (cur instanceof RetryableImportException) {
+                // 我们自己标记的"临时故障"（也是故障注入实验用的类型）
+                return true;
+            }
+            if (cur instanceof DataAccessException) {
+                // 排除掉上面那些之后，剩下的基本是：
+                //   CannotGetJdbcConnectionException  连接池空了 / 数据库挂了
+                //   DataAccessResourceFailureException 连接被服务端掐断
+                //   DeadlockLoserDataAccessException   死锁被回滚（重试是标准解法）
+                //   QueryTimeoutException              查询超时
+                //   CannotAcquireLockException         锁等待超时
+                // 全都可以靠"等一会儿再试"解决
+                return true;
+            }
+            if (cur instanceof java.net.SocketTimeoutException) {
+                // 网络抖动 / 对方响应慢
+                return true;
+            }
+
+            cur = cur.getCause();
+        }
+        // 未知异常一律不重试。
+        // 这是**保守选择**：不知道能不能重试的时候，不重试。
+        // 因为对不可重入的操作盲目重试，可能造成重复扣款、重复发短信这类真正的事故。
+        return false;
     }
 
     /**
@@ -380,8 +730,31 @@ public class ImportServiceImpl implements ImportService {
      */
     private void writeAllInBatches(List<FactImportRow> rows, int batchSize, java.util.concurrent.atomic.AtomicInteger written) {
         int size = rows.size();
+        int batchNo = 0;
         for (int from = 0; from < size; from += batchSize) {
             int to = Math.min(from + batchSize, size);
+            batchNo++;
+
+            // ==============================================================
+            // 【Day 10 实验用 · 故障注入】默认关闭（failAtBatch = -1）
+            // ==============================================================
+            // 目的：造出"前面的批次已经提交、中间某一批突然失败"这个真实场景。
+            //
+            // 为什么抛在 writeBatchInNewTx **之前**？
+            //   这样第 batchNo 批**一个事务都没开**，前 batchNo-1 批已经提交落库 ——
+            //   正是我们要的"半截数据"状态。
+            //   如果抛在事务内部，当前批会被回滚，效果等价，但日志里会多几条 rollback，
+            //   不如现在干净。
+            //
+            // 为什么抛 RetryableImportException 而不是随便一个 RuntimeException？
+            //   因为要验证"可重试异常 → 自动退避重试"这条链路。
+            //   随便抛 RuntimeException 会被判成不可重试，直接 FAILED，实验就跑不下去了。
+            if (failAtBatch > 0 && batchNo == failAtBatch) {
+                throw new RetryableImportException(String.format(
+                        "【故障注入】模拟第 %d 批写库时数据库连接中断（前 %d 批、共 %d 行已提交）",
+                        batchNo, batchNo - 1, written.get()));
+            }
+
             writeBatchInNewTx(rows.subList(from, to));
             // ★ 必须在事务成功提交之后才累加。
             //   如果放在方法之前累加，事务回滚了计数却没回退，记账就假了。
@@ -396,11 +769,18 @@ public class ImportServiceImpl implements ImportService {
      * 好处是长事务问题消失；代价是失去全局原子性 ——
      * 第 10 批失败时，前 9 批（4500 行）已经落库了。
      *
-     * 【那这 4500 行怎么办？靠 Day 10 的重试 + 幂等】
-     * 重试时如果还是普通 INSERT，这 4500 行会撞唯一索引 → 整批失败 → 永远重试不成功。
-     * 所以 Day 10 要把 insertBatch 改成 `INSERT ... ON DUPLICATE KEY UPDATE`（upsert），
+     * 【那这 4500 行怎么办？—— Day 10 已经给了答案】
+     * 如果重试时还是普通 INSERT，这 4500 行会撞唯一索引 → 整批失败 → 永远重试不成功。
+     * 所以 Day 10 把 insertBatch 改成了 `INSERT ... ON DUPLICATE KEY UPDATE`（upsert），
      * 让"重复插入"变成"覆盖更新"，重试才真正安全。
      * **"可重试"的前提是"可重入"。** 这句话值得记住。
+     *
+     * 注意这里的分工：
+     *   事务负责"一批之内的原子性"（500 行要么全进要么全不进）
+     *   upsert 负责"跨批次的可重入性"（重跑不会产生重复数据）
+     * 两者解决的是不同层面的问题，**缺一个都不行**：
+     *   只有事务没 upsert → 重试永远失败
+     *   只有 upsert 没事务 → 一批里部分成功，数据脏
      */
     private void writeBatchInNewTx(List<FactImportRow> rows) {
         transactionTemplate.executeWithoutResult(status -> writeBatch(rows));
@@ -529,6 +909,8 @@ public class ImportServiceImpl implements ImportService {
         vo.setStatus(task.getStatus());
         vo.setTotalRows(task.getTotalRows());
         vo.setSuccessRows(task.getSuccessRows());
+        vo.setRetryCount(task.getRetryCount());
+        vo.setNextRetryTime(task.getNextRetryTime());
         vo.setElapsedMs(task.getCreateTime() == null ? null
                 : java.time.Duration.between(task.getCreateTime(),
                         task.getUpdateTime() == null ? LocalDateTime.now() : task.getUpdateTime()).toMillis());
@@ -536,10 +918,27 @@ public class ImportServiceImpl implements ImportService {
         String message;
         if (AsyncTaskStatus.SUCCESS.equals(task.getStatus())) {
             message = "导入成功，共 " + (task.getSuccessRows() == null ? 0 : task.getSuccessRows()) + " 行";
+            if (task.getRetryCount() != null && task.getRetryCount() > 0) {
+                // 重试过的任务要告诉用户"它是经过波折才成功的"，不然用户会以为一直很顺
+                message += "（期间自动重试 " + task.getRetryCount() + " 次后成功）";
+            }
         } else if (AsyncTaskStatus.FAILED.equals(task.getStatus())) {
             message = "导入失败：" + (task.getErrorMsg() == null ? "未知原因" : task.getErrorMsg());
         } else if (AsyncTaskStatus.RUNNING.equals(task.getStatus())) {
             message = "任务执行中，请稍候";
+        } else if (AsyncTaskStatus.RETRY_WAIT.equals(task.getStatus())) {
+            // ★ Day 10：这是"失败后正在等退避时间"的状态，不能笼统说"排队中"
+            //   用户看到"排队中"会以为很顺利，实际上刚刚失败过一次。
+            //   明说还差几秒、还剩几次机会，用户才知道该不该继续等。
+            long remain = task.getNextRetryTime() == null ? 0
+                    : Math.max(0, java.time.Duration.between(LocalDateTime.now(), task.getNextRetryTime()).getSeconds());
+            int used = task.getRetryCount() == null ? 0 : task.getRetryCount();
+            // remain 会等于 0：调度器每 500ms 扫一次，而前端每 200ms 轮询一次，
+            // 总有那么一个瞬间"时间已到但调度器还没扫到"。此时说"0 秒后"很别扭，
+            // 说"即将"更准确 —— **倒计时显示 0 不等于卡住了，只是轮询赶在了调度前面。**
+            String when = remain > 0 ? remain + " 秒后" : "即将";
+            message = "上次执行失败，" + when + "自动重试（第 " + used + "/" + maxRetry + " 次）："
+                    + (task.getErrorMsg() == null ? "" : task.getErrorMsg());
         } else {
             message = "任务已受理，正在排队";
         }
