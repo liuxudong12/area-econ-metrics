@@ -62,6 +62,27 @@ public class ImportResultVO {
      */
     private LocalDateTime nextRetryTime;
 
+    /**
+     * Day 11 新增：错误报告是否可下载。
+     *
+     * 只有"有错误明细"的失败任务才是 true。
+     * 为什么不让前端自己判断（errorRows > 0）？
+     *   因为 errorRows 是"校验错误的行数"，而"能不能下载"还取决于
+     *   明细是否真的落库成功了（落库失败时明细是空的）。
+     *   这种"能不能做"的判断应该由后端给出确定答案，不要让前端去推测。
+     */
+    private Boolean errorReportAvailable;
+
+    /**
+     * Day 11 新增：错误报告下载地址。
+     *
+     * 直接给完整路径，前端拿来实现"下载"按钮即可 —— 不用自己拼 taskId、
+     * 也不用知道是 /api/import 还是 /import。**接口地址变了只改后端一处。**
+     * （这种"由后端下发 URL"的做法在 HATEOAS 里叫 hypermedia，
+     * 但这里没那么正式，就是单纯让前端少拼一次字符串。）
+     */
+    private String errorReportUrl;
+
     /** 给前端/用户看的一句话提示 */
     private String message;
 }

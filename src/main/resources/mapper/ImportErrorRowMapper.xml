@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.liuxudong.areaecon.mapper.ImportErrorRowMapper">
+
+    <!--
+      ============================================================
+      批量插入错误明细
+      ============================================================
+
+      【注意这里没有 ON DUPLICATE KEY UPDATE】
+      对比 FactIndicatorValueMapper.insertBatch —— 那个必须用 upsert，
+      因为重试时要能"重入"。这里不需要，原因见 ImportErrorRowMapper.java 的注释：
+      每轮开始前会把该任务的错误行整批删掉重写，天然幂等。
+
+      【为什么一次插 500 条而不是全部】
+      错误行可能有 1 万条。一条 SQL 塞 1 万个 VALUES，
+      单条 SQL 几百 KB，MySQL 解析成本高、undo log 也大。
+      分 500 一批，20 次往返，总耗时远低于一次塞 1 万。
+      （实测数据见 docs/00-第11天操作手册.md）
+    -->
+    <insert id="insertBatch">
+        INSERT INTO import_error_row
+            (task_id, row_num, region_code, indicator_code, period_code,
+             period_type, indicator_value, error_type, error_msg)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.taskId}, #{item.rowNum}, #{item.regionCode}, #{item.indicatorCode},
+             #{item.periodCode}, #{item.periodType}, #{item.indicatorValue},
+             #{item.errorType}, #{item.errorMsg})
+        </foreach>
+    </insert>
+
+    <!--
+      ============================================================
+      游标分页（给导出用）
+      ============================================================
+
+      WHERE id > #{lastId} 而不是 LIMIT offset, size：
+        · offset 法的代价随页码线性增长（第 1 万页要扫并丢弃 9999*N 行）
+        · 游标法始终是主键范围扫描，每页耗时几乎恒定
+
+      ORDER BY id 是必须的 —— 游标分页的"不重不漏"完全依赖这个顺序。
+      如果这里不排序，MySQL 返回顺序不保证，就可能漏行或读重复。
+    -->
+    <select id="selectPageByCursor" resultType="com.liuxudong.areaecon.entity.ImportErrorRow">
+        SELECT id, task_id, row_num, region_code, indicator_code, period_code,
+               period_type, indicator_value, error_type, error_msg, create_time
+        FROM import_error_row
+        WHERE task_id = #{taskId}
+          AND id &gt; #{lastId}
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+    <!--
+      ============================================================
+      按错误类型统计
+      ============================================================
+
+      走 idx_task_type(task_id, error_type) 覆盖索引：
+      WHERE 和 GROUP BY 用的两列都在索引里，count(*) 也不需要回表。
+      EXPLAIN 里会出现 "Using index"。
+
+      用 as 起别名时注意：MyBatis 返回 Map 时，key 就是别名原文。
+      这里特意不用 count(*) 而用 cnt，避免前端拿到 key 叫 "count(*)" 这种奇怪东西。
+    -->
+    <select id="countByType" resultType="java.util.LinkedHashMap">
+        SELECT error_type AS errorType,
+               COUNT(*)   AS cnt
+        FROM import_error_row
+        WHERE task_id = #{taskId}
+        GROUP BY error_type
+        ORDER BY cnt DESC
+    </select>
+
+    <select id="countByTaskId" resultType="long">
+        SELECT COUNT(*) FROM import_error_row WHERE task_id = #{taskId}
+    </select>
+
+</mapper>

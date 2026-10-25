@@ -76,6 +76,18 @@ public class AsyncTask {
     /** 成功写入的行数 */
     private Integer successRows;
 
+    /**
+     * Day 11：校验失败的行数（真实总数）。
+     *
+     * 【为什么它不能只用 count(import_error_row) 得到】
+     * 因为错误明细有条数上限（默认 10000）。一个有 5 万行错误的文件，
+     * 明细表只存 1 万条，但这个字段记的是 50000。
+     *
+     * 用户必须知道真实数字 —— 否则他会以为"改完这 1 万行就没事了"，
+     * 重传之后又失败，那才是最气人的体验。
+     */
+    private Integer errorRows;
+
     /** 失败原因。VARCHAR(1000)，所以写错误信息时要注意截断，别超长 */
     private String errorMsg;
 

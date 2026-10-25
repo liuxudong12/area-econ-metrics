@@ -12,9 +12,11 @@ import com.liuxudong.areaecon.controller.vo.ImportResultVO;
 import com.liuxudong.areaecon.entity.AsyncTask;
 import com.liuxudong.areaecon.entity.AsyncTaskStatus;
 import com.liuxudong.areaecon.entity.FactIndicatorValue;
+import com.liuxudong.areaecon.entity.ImportErrorRow;
 import com.liuxudong.areaecon.excel.FactImportListener;
 import com.liuxudong.areaecon.mapper.AsyncTaskMapper;
 import com.liuxudong.areaecon.mapper.FactIndicatorValueMapper;
+import com.liuxudong.areaecon.mapper.ImportErrorRowMapper;
 import com.liuxudong.areaecon.service.ImportService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -64,8 +66,19 @@ public class ImportServiceImpl implements ImportService {
      */
     private static final int COLLECT_BATCH = 2000;
 
+    /**
+     * 错误明细落库时，一条 SQL 塞多少条。
+     *
+     * 和写业务数据的 batchSize（500）分开配，因为两者特点不同：
+     *   · 业务数据行宽（6 个字段），500 行一条 SQL 约 100KB
+     *   · 错误行多一个 error_msg（最长 500 字符），500 行可能到 300KB
+     * 而且错误行经常出现"一次几千条"，所以用 500 分批比一次性塞更稳。
+     */
+    private static final int ERROR_BATCH = 500;
+
     private final FactIndicatorValueMapper factIndicatorValueMapper;
     private final AsyncTaskMapper asyncTaskMapper;
+    private final ImportErrorRowMapper importErrorRowMapper;
     private final ThreadPoolExecutor importExecutor;
     /** 编程式事务模板：用来给"每一批"单独开事务 */
     private final TransactionTemplate transactionTemplate;
@@ -124,12 +137,28 @@ public class ImportServiceImpl implements ImportService {
     @Value("${stat.import.test.fail-at-batch:-1}")
     private int failAtBatch;
 
+    /**
+     * Day 11：一个任务最多记录多少条错误明细。
+     *
+     * 默认 10000。为什么不是无限：
+     *   · 一个 10 万行全错的文件，会给数据库灌 10 万行错误日志
+     *   · 用户面对 10 万条错误也修不动 —— 这种文件应该重做，不是修
+     * 超过时只统计数量、不记明细，界面上显示"仅记录前 N 条"。
+     *
+     * ⚠️ 这个值必须 <= import_error_row 表能承受的量，也影响下载文件的体积。
+     *    1 万条错误 ≈ 1 万行 Excel ≈ 2MB 左右，还在可接受范围。
+     */
+    @Value("${stat.import.max-error-rows:10000}")
+    private int maxErrorRows;
+
     public ImportServiceImpl(FactIndicatorValueMapper factIndicatorValueMapper,
                              AsyncTaskMapper asyncTaskMapper,
+                             ImportErrorRowMapper importErrorRowMapper,
                              @Qualifier(ImportThreadPoolConfig.IMPORT_EXECUTOR) ThreadPoolExecutor importExecutor,
                              PlatformTransactionManager transactionManager) {
         this.factIndicatorValueMapper = factIndicatorValueMapper;
         this.asyncTaskMapper = asyncTaskMapper;
+        this.importErrorRowMapper = importErrorRowMapper;
         this.importExecutor = importExecutor;
         // TransactionTemplate 是 Spring 提供的"编程式事务"工具：
         //   transactionTemplate.executeWithoutResult(status -> { ... });
@@ -161,7 +190,7 @@ public class ImportServiceImpl implements ImportService {
         //   我们用 max-rows=50000 给内存设了上限。这是"原子性"和"内存"的交换，
         //   真实项目里如果要导 100 万行，就得改成"两遍扫描"（第一遍只校验，第二遍才写）。
         List<FactImportRow> allRows = new java.util.ArrayList<>();
-        FactImportListener listener = new FactImportListener(COLLECT_BATCH, allRows::addAll);
+        FactImportListener listener = new FactImportListener(COLLECT_BATCH, allRows::addAll, maxErrorRows);
 
         try (InputStream in = file.getInputStream()) {
             EasyExcel.read(in, FactImportRow.class, listener).sheet().doRead();
@@ -480,7 +509,7 @@ public class ImportServiceImpl implements ImportService {
         }
 
         List<FactImportRow> allRows = new java.util.ArrayList<>();
-        FactImportListener listener = new FactImportListener(COLLECT_BATCH, allRows::addAll);
+        FactImportListener listener = new FactImportListener(COLLECT_BATCH, allRows::addAll, maxErrorRows);
         // 精确记账：真正提交进数据库的行数。
         // 校验失败时它是 0；写库中途失败时是"已提交的那几批的总和"。
         // 用户最关心"到底进去多少行"，这个数字必须真实。
@@ -490,8 +519,22 @@ public class ImportServiceImpl implements ImportService {
             EasyExcel.read(in, FactImportRow.class, listener).sheet().doRead();
 
             if (listener.getErrorRows() > 0) {
+                // ★★ Day 11 的关键顺序：先把错误明细落库，再抛异常 ★★
+                //
+                //   为什么不能"先抛异常，在 catch 里落库"？
+                //   因为 catch 收的是所有异常（数据库断了、文件没了、校验失败），
+                //   到那时候已经分不清"这次失败是不是因为数据有问题"。
+                //   只有在这个位置，我们**确定**错误明细是有效的、值得留给用户的。
+                //
+                //   为什么这一步必须用独立事务（见 persistErrors）？
+                //   因为紧接着抛出的 BizException 会让 handleFailure 把任务标成 FAILED，
+                //   而"任务失败"和"错误明细"必须是两件独立的事 ——
+                //   任务失败要回滚业务数据，但错误明细是**失败的原因**，它得留下。
+                //   放同一个事务里，回滚时错误明细一起没了，用户点下载得到空表。
+                persistErrors(taskId, listener);
+
                 throw new BizException("共 " + listener.getErrorRows()
-                        + " 行数据不合法，本次一行都未写入：" + listener.errorSummary());
+                        + " 行数据不合法，本次一行都未写入。示例：" + listener.errorSummary());
             }
             if (listener.getTotalRows() == 0) {
                 throw new BizException("文件里没有读到任何数据行，请检查表头");
@@ -519,6 +562,7 @@ public class ImportServiceImpl implements ImportService {
                             .set(AsyncTask::getStatus, AsyncTaskStatus.SUCCESS)
                             .set(AsyncTask::getTotalRows, allRows.size())
                             .set(AsyncTask::getSuccessRows, allRows.size())
+                            .set(AsyncTask::getErrorRows, 0)
                             .set(AsyncTask::getErrorMsg, null)
                             .set(AsyncTask::getNextRetryTime, null));
 
@@ -529,7 +573,15 @@ public class ImportServiceImpl implements ImportService {
         } catch (Exception e) {
             // ★ 所有失败都收敛到一个地方处理：分类 → 重试 / 终结。
             //   为什么不在 catch 里直接 sleep 然后重试？见 handleFailure 的注释。
-            handleFailure(task, listener.getTotalRows(), written.get(), e);
+            //
+            //   Day 11 改成传 listener 而不是两个数字：
+            //   失败处理需要的不只是 totalRows，还需要 errorRows（有多少行校验没过）。
+            //   多传两个 long 参数虽然也能用，但调用点会变成
+            //       handleFailure(task, listener.getTotalRows(), written.get(),
+            //                     listener.getErrorRows(), e)
+            //   一长串 getter 摆在调用点，读的人要一个个对参数位置。
+            //   **参数超过 4 个，就该考虑传对象。**
+            handleFailure(task, listener, written.get(), e);
         }
     }
 
@@ -579,15 +631,20 @@ public class ImportServiceImpl implements ImportService {
      * （也可以复用 PENDING + next_retry_time 非空，但那样状态含义就模糊了，
      *   运维看表分不清"刚建单"和"失败等重试"，见 AsyncTaskStatus 的注释。）
      *
-     * @param task      失败时的任务快照（注意：retry_count 用的是快照里的值，
-     *                  而不是重新查库 —— 因为这个任务只可能被当前线程持有，
-     *                  抢占式 update 已经保证了排他性）
-     * @param totalRows 解析出的总行数
-     * @param written   本次真正提交成功的行数
-     * @param e         原始异常
+     * @param task     失败时的任务快照（注意：retry_count 用的是快照里的值，
+     *                 而不是重新查库 —— 因为这个任务只可能被当前线程持有，
+     *                 抢占式 update 已经保证了排他性）
+     * @param listener 这次的解析器。总行数和错误行数都从它身上取，
+     *                 比在调用点传一堆 long 参数清楚（Day 11 改）
+     * @param written  本次真正提交成功的行数
+     * @param e        原始异常
      */
-    private void handleFailure(AsyncTask task, long totalRows, int written, Exception e) {
+    private void handleFailure(AsyncTask task, FactImportListener listener, int written, Exception e) {
         Long taskId = task.getId();
+        long totalRows = listener.getTotalRows();
+        // 校验失败的行数。注意它和"明细条数"可能不相等（明细有上限），
+        // 这里要的是**真实总数**，用户需要知道到底错了多少行。
+        long errorRows = listener.getErrorRows();
         String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
         int retried = task.getRetryCount() == null ? 0 : task.getRetryCount();
 
@@ -610,6 +667,7 @@ public class ImportServiceImpl implements ImportService {
                             .set(AsyncTask::getNextRetryTime, next)
                             .set(AsyncTask::getTotalRows, (int) totalRows)
                             .set(AsyncTask::getSuccessRows, written)
+                            .set(AsyncTask::getErrorRows, (int) errorRows)
                             .set(AsyncTask::getErrorMsg, historyMsg));
 
             log.warn("[导入-重试] taskId={} 第 {} 次执行失败，{} 秒后重试（剩余重试 {}/{}）。"
@@ -642,6 +700,7 @@ public class ImportServiceImpl implements ImportService {
                         //   早期版本写错了，导致"校验失败、一行没写"的任务却显示 successRows=1，
                         //   用户看到"成功 1 行 / 失败"会彻底懵掉。
                         .set(AsyncTask::getSuccessRows, written)
+                        .set(AsyncTask::getErrorRows, (int) errorRows)
                         .set(AsyncTask::getErrorMsg, truncate(reason, ERROR_MSG_MAX)));
     }
 
@@ -787,6 +846,85 @@ public class ImportServiceImpl implements ImportService {
     }
 
     // ==========================================================================
+    // Day 11：错误明细落库
+    // ==========================================================================
+
+    /**
+     * 把本次解析出来的错误明细写进 import_error_row。
+     *
+     * ==========================================================================
+     * 【★ 为什么这个方法必须自己开事务，而且必须是"独立"的】
+     * ==========================================================================
+     * 调用它的地方紧接着就会 `throw new BizException(...)`，然后 handleFailure
+     * 把任务标成 FAILED。如果错误明细和"失败处理"共用一个事务：
+     *
+     *     开事务 → 写错误明细 → 抛异常 → 事务回滚
+     *     → 错误明细被撤销 → 用户点"下载错误报告"得到一张空表
+     *
+     * 这就是本方法用自己那份 transactionTemplate 的原因：
+     * **它先提交，再让异常往上走。** 提交之后，后面无论怎么回滚都动不到它。
+     *
+     * 这和 Day 10 "任务状态更新不能和业务数据同事务"是同一个道理的两面：
+     *   · 业务数据要能回滚（一行都不写）
+     *   · 失败的原因不能回滚（否则用户永远不知道错在哪）
+     * 两者必须分开。
+     *
+     * ==========================================================================
+     * 【为什么先 DELETE 再 INSERT，而不是 upsert】
+     * ==========================================================================
+     * 重试时会重新解析整个文件，如果直接 INSERT，同一个任务会有两套错误明细，
+     * 用户下载后看到重复行，还会怀疑"是不是导了两遍"。
+     * 错误明细的语义是"**当前这一轮的快照**"，不是流水账，所以整批替换最合适。
+     *
+     * DELETE + INSERT 放在同一个事务里：要么全清全写，要么都不动，
+     * 不会出现"删完了但插入失败"导致用户看到空表的中间状态。
+     *
+     * ==========================================================================
+     * 【为什么所有异常都自己吞掉，不往外抛】
+     * ==========================================================================
+     * 这个方法是为了"帮用户看清错误"而存在的。如果它自己失败（比如错误表被误删、
+     * 数据库连接池正好耗尽），不应该把原始的业务异常盖掉 ——
+     * 用户至少要能看到"共 3000 行不合法"这句话。
+     * 所以这里 catch 全部、只记日志，主流程继续抛它自己的 BizException。
+     * **辅助功能不能拖垮主流程。**
+     */
+    private void persistErrors(Long taskId, FactImportListener listener) {
+        int total = listener.errorSize();
+        if (total == 0) {
+            return;
+        }
+        long start = System.currentTimeMillis();
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                // ① 清掉上一轮的错误明细（重试时会重复进入这个方法）
+                importErrorRowMapper.delete(
+                        new LambdaQueryWrapper<ImportErrorRow>()
+                                .eq(ImportErrorRow::getTaskId, taskId));
+
+                // ② 分批写。为什么不用一条 SQL 塞 1 万条：单条 SQL 会到几 MB，
+                //    MySQL 解析成本高，而且一旦失败整批全部重来。
+                for (int from = 0; from < total; from += ERROR_BATCH) {
+                    // 拷一份再改 taskId：errorChunk 返回的是 Listener 内部 List 的视图，
+                    // 直接用会改到 Listener 的状态（虽然这里改的是对象属性，不算结构修改，
+                    // 但"不碰别人内部集合"是好习惯）
+                    List<ImportErrorRow> chunk =
+                            new java.util.ArrayList<>(listener.errorChunk(from, ERROR_BATCH));
+                    chunk.forEach(e -> e.setTaskId(taskId));
+                    importErrorRowMapper.insertBatch(chunk);
+                }
+            });
+            log.warn("[导入-错误明细] 已落库 taskId={} 条数={} 批次数={} 耗时={}ms{}",
+                    taskId, total, (total + ERROR_BATCH - 1) / ERROR_BATCH,
+                    System.currentTimeMillis() - start,
+                    listener.isTruncated() ? "（明细已截断，实际错误行 " + listener.getErrorRows() + "）" : "");
+        } catch (Exception e) {
+            // 只记日志，不抛。见方法注释最后一段。
+            log.error("[导入-错误明细] 落库失败 taskId={} 条数={}。用户将无法下载错误报告，"
+                    + "但任务失败信息仍会正常返回", taskId, total, e);
+        }
+    }
+
+    // ==========================================================================
     // 四、工具方法
     // ==========================================================================
 
@@ -909,8 +1047,21 @@ public class ImportServiceImpl implements ImportService {
         vo.setStatus(task.getStatus());
         vo.setTotalRows(task.getTotalRows());
         vo.setSuccessRows(task.getSuccessRows());
+        vo.setErrorRows(task.getErrorRows());
         vo.setRetryCount(task.getRetryCount());
         vo.setNextRetryTime(task.getNextRetryTime());
+
+        // Day 11：有错误明细时，把下载地址直接下发。
+        // 判断条件用 (errorRows > 0) 而不是 (status == FAILED)：
+        // 重试等待中的任务也可能已经有错误明细了（上一轮解析出来的）。
+        // 让它随时能下，用户不用等任务彻底结束 —— 那可能要 7 秒。
+        int errRows = task.getErrorRows() == null ? 0 : task.getErrorRows();
+        if (errRows > 0) {
+            vo.setErrorReportAvailable(true);
+            vo.setErrorReportUrl("/api/import/task/" + task.getId() + "/errors");
+        } else {
+            vo.setErrorReportAvailable(false);
+        }
         vo.setElapsedMs(task.getCreateTime() == null ? null
                 : java.time.Duration.between(task.getCreateTime(),
                         task.getUpdateTime() == null ? LocalDateTime.now() : task.getUpdateTime()).toMillis());
@@ -924,6 +1075,12 @@ public class ImportServiceImpl implements ImportService {
             }
         } else if (AsyncTaskStatus.FAILED.equals(task.getStatus())) {
             message = "导入失败：" + (task.getErrorMsg() == null ? "未知原因" : task.getErrorMsg());
+            if (errRows > 0) {
+                // 明确告诉用户"有东西可以下载"。只说"导入失败"，用户只能去问开发 ——
+                // 而这明明是一个他自己就能解决的数据问题。
+                // 注意这里**不再重复行数**：上面 error_msg 里已经有"共 2989 行"了。
+                message += "（已生成错误报告，可下载后修改重传）";
+            }
         } else if (AsyncTaskStatus.RUNNING.equals(task.getStatus())) {
             message = "任务执行中，请稍候";
         } else if (AsyncTaskStatus.RETRY_WAIT.equals(task.getStatus())) {

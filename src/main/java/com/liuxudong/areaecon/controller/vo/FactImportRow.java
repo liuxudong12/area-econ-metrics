@@ -1,5 +1,6 @@
 package com.liuxudong.areaecon.controller.vo;
 
+import com.alibaba.excel.annotation.ExcelIgnore;
 import com.alibaba.excel.annotation.ExcelProperty;
 import lombok.Data;
 
@@ -59,4 +60,22 @@ public class FactImportRow {
     /** 指标值（金额/数值） */
     @ExcelProperty("指标值")
     private BigDecimal indicatorValue;
+
+    /**
+     * Day 11 新增：这一行在 Excel 里的行号（1-based，含表头）。
+     *
+     * 【为什么用 @ExcelIgnore】
+     * 加了 @ExcelProperty 的字段会被 EasyExcel 当成"一列"：读的时候去表头里找对应列，
+     * 写的时候也当成一列输出。而行号是我们算出来的、不是文件里的列，
+     * 必须标 @ExcelIgnore 让它彻底不参与 Excel 的读写映射。
+     *
+     * 【为什么需要这个字段】
+     * 导出"全部数据 + 错误原因"的报告时，要把每条错误原因贴回它原来那一行。
+     * 错误明细表里存的是行号（1003），重新解析原文件时也需要知道"现在这一行是第几行"，
+     * 两边靠行号对上。没有这个字段，就得在导出时再维护一个"第N个元素="的序号，
+     * 而 Listener 是按批回调的，序号很容易算错。
+     * **能在数据里携带的定位信息，就不要靠外部计数去推。**
+     */
+    @ExcelIgnore
+    private Integer rowNum;
 }
