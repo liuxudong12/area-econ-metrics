@@ -361,4 +361,106 @@
             deleted         = 0
     </insert>
 
+    <!-- ==================================================================
+         Day 12：明细导出
+         ==================================================================
+
+         【★ 这段 <sql> 片段是今天的第一个技术点：条件只写一遍 ★】
+         下面两个查询（计数、取数）用的过滤条件必须**完全一致**，
+         否则会出现"界面说 12,000 行、导出文件只有 11,980 行"这种事，
+         用户第一反应是"系统丢数据了"。
+
+         把条件抽成 <sql id="exportWhere">，两个查询都用 <include refid="exportWhere"/> 引入 ——
+         编译期就有保证，改一处全改，不会漏。
+
+         ⚠️ f.deleted = 0 必须自己写。手写 SQL 不走 @TableLogic 的逻辑删除拦截。
+    -->
+    <sql id="exportWhere">
+        f.deleted = 0
+        <if test="query.regionCodePrefix != null and query.regionCodePrefix != ''">
+            AND f.region_code LIKE CONCAT(#{query.regionCodePrefix}, '%')
+        </if>
+        <if test="query.indicatorCode != null and query.indicatorCode != ''">
+            AND f.indicator_code = #{query.indicatorCode}
+        </if>
+        <if test="query.periodType != null and query.periodType != ''">
+            AND f.period_type = #{query.periodType}
+        </if>
+        <if test="query.periodFrom != null and query.periodFrom != ''">
+            AND f.period_code &gt;= #{query.periodFrom}
+        </if>
+        <if test="query.periodTo != null and query.periodTo != ''">
+            AND f.period_code &lt;= #{query.periodTo}
+        </if>
+    </sql>
+
+    <!--
+      导出前的计数。
+
+      【为什么导出前要先 COUNT 一次？】
+      因为 HTTP 响应是**流式**的：一旦 setHeader + 开始写 Excel，就没法回头了。
+      如果这个用户筛出来的数据有 300 万行，而你闷头开始导，
+      最后要么 OOM、要么 Excel 超出行数上限、要么用户等到超时 —— 全程无法告知他"太多了"。
+
+      正确顺序是：
+        ① 先 COUNT（一条聚合 SQL，很快）
+        ② 判断是否超过 max-rows → 超了就直接返回 JSON 错误
+        ③ 通过校验后才 setHeader、才开始写
+
+      代价是 "多一次 COUNT"，收益是 "永远不会有半截文件"。这笔买卖很划算。
+      （COUNT(*) 在 InnoDB 上要走索引，48 万行大约几十毫秒，详见手册的实测数字。）
+    -->
+    <select id="countForExport" resultType="long">
+        SELECT COUNT(*)
+        FROM fact_indicator_value f
+        WHERE <include refid="exportWhere"/>
+    </select>
+
+    <!--
+      游标分页取一页（keyset pagination / 键集分页）。
+
+      【★ 今天最重要的一个 SQL：为什么不是 LIMIT offset, size ★】
+
+        ✗ 传统写法：
+            SELECT ... FROM fact_indicator_value WHERE 条件 ORDER BY id LIMIT 400000, 2000
+          语义是"先按顺序数出 40 万行，把它们全部丢掉，再取接下来的 2000 行"。
+          所以**翻得越深越慢**，第 N 页的成本是 O(offset + size)。
+          全量导出要翻 245 页，总成本 O(n²) —— 越往后越像卡死。
+
+        ✓ 游标写法：
+            SELECT ... FROM fact_indicator_value WHERE 条件 AND id > 上一页最后一个 id
+            ORDER BY id LIMIT 2000
+          语义是"直接在 B+ 树上定位到 id=400001 这个位置，往后再取 2000 行"。
+          **每一页的成本都一样**，总成本 O(n)。
+
+      【前提：排序键必须唯一且有序】
+        这里用主键 id —— 自增、唯一、有索引，天然满足。
+        如果业务上必须按 update_time 排序，那就要用 (update_time, id) 做联合游标，
+        否则同一时刻的多条记录会漏掉或重复（这个细节面试常考）。
+
+      【为什么 ORDER BY id 而不是 ORDER BY region_code, indicator_code】
+        id 是聚簇索引（InnoDB 主键索引的叶子节点就是数据行本身），
+        按 id 顺序扫描 = **顺序 I/O**，一次读一大片，预读能生效。
+        按别的字段排 = 要么走二级索引再回表（随机 I/O），要么 filesort 临时表。
+
+      【#{} 里的 limit】
+        LIMIT 后面可以绑定参数（MySQL 支持），但**不能用 #{} 之外的 ${}**，
+        因为 LIMIT 位置不允许参数化表达式（如 LIMIT #{a}*2 会报错）。
+    -->
+    <select id="selectForExportByCursor"
+            resultType="com.liuxudong.areaecon.entity.FactIndicatorValue">
+        SELECT f.id,
+               f.region_code,
+               f.indicator_code,
+               f.period_code,
+               f.period_type,
+               f.indicator_value,
+               f.data_source
+        FROM fact_indicator_value f
+        WHERE <include refid="exportWhere"/>
+          AND f.id &gt; #{lastId}
+        ORDER BY f.id
+        LIMIT #{limit}
+    </select>
+
 </mapper>

@@ -1,6 +1,7 @@
 package com.liuxudong.areaecon.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.liuxudong.areaecon.controller.vo.FactExportQuery;
 import com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionRankVO;
@@ -213,4 +214,50 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * @return 受影响行数（插入计 1、更新计 2、无变化计 0，**已混算，不可当行数用**）
      */
     int insertBatch(@Param("list") List<FactIndicatorValue> list);
+
+    // ==================== Day 12 新增：导出（游标分页） ====================
+
+    /**
+     * 按筛选条件数一共多少行 —— 导出前的"可行性检查"。
+     *
+     * 【为什么导出前必须先数一遍】
+     * HTTP 响应一旦开始写就不能回头。如果闷头开始导一个 300 万行的结果，
+     * 中途撞上 Excel 的 1,048,576 行上限或者 OOM，用户只会拿到一个**损坏的文件**，
+     * 而且拿不到任何错误提示 —— 他会以为是网络问题，反复重试，把服务器再拖一遍。
+     *
+     * 所以顺序必须是：先 COUNT → 超上限就直接返回 JSON 错误 → 通过才写文件。
+     * 多花几十毫秒 COUNT，换来"永远不会有半截文件"。
+     *
+     * @param query 筛选条件（和取数用**同一个对象**，保证条件一致）
+     * @return 符合条件的总行数
+     */
+    long countForExport(@Param("query") FactExportQuery query);
+
+    /**
+     * 游标分页取一页数据（keyset pagination）。
+     *
+     * 【和普通分页的区别 —— 这是今天最核心的一句话】
+     *   普通分页 LIMIT 400000, 2000：先数出 40 万行丢掉，再取 2000 行 → 越翻越慢，O(n²)
+     *   游标分页 WHERE id &gt; 400000 LIMIT 2000：直接定位，往后再取 2000 行 → 每页恒定，O(n)
+     *
+     * 【调用方式（Service 里就是这么写的）】
+     * <pre>
+     *   long lastId = 0;
+     *   while (true) {
+     *       List&lt;X&gt; page = mapper.selectForExportByCursor(query, lastId, 2000);
+     *       if (page.isEmpty()) break;
+     *       writeToExcel(page);                    // 写完立刻丢掉，不进内存
+     *       lastId = page.get(page.size() - 1).getId();
+     *       if (page.size() &lt; 2000) break;         // 最后一页
+     *   }
+     * </pre>
+     * 内存里永远只有一页（2000 个对象），跟总行数无关。
+     *
+     * @param query  筛选条件
+     * @param lastId 上一页最后一条的 id；第一页传 0
+     * @param limit  每页多少条（建议 1000~5000，太小往返多、太大吃内存）
+     */
+    List<FactIndicatorValue> selectForExportByCursor(@Param("query") FactExportQuery query,
+                                                     @Param("lastId") Long lastId,
+                                                     @Param("limit") int limit);
 }
