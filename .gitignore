@@ -27,6 +27,13 @@ Thumbs.db
 # 目录会在程序启动时用 Files.createDirectories 自动创建，不用提交空目录。
 data/import/
 
+# ===== Day 12：导出的产物目录 =====
+# 正式导出是**直接写 HTTP 响应流**的，根本不落盘（不生成文件）。
+# 这个目录只在手工测试时用（curl -o data/export/xxx.xlsx），所以同样要忽略。
+# 如果哪天真要落盘（比如"定时导出到共享盘"），记得同时加清理策略：
+# 一个 48 万行的文件 22MB，一天导 10 次、留 90 天就是 20GB —— 磁盘是这样被悄悄吃掉的。
+data/export/
+
 # ===== 本地私密配置（密码等）=====
 application-local.yml
 application-local.properties
