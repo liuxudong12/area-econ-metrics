@@ -3,7 +3,9 @@ package com.liuxudong.areaecon.config;
 import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
+import com.liuxudong.areaecon.security.DataScopeInnerInterceptor;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -22,27 +24,54 @@ import org.springframework.context.annotation.Configuration;
 public class MybatisPlusConfig {
 
     /**
-     * 分页插件。
+     * 【Day 13 新增】行级数据权限拦截器。
      *
-     * 【为什么必须显式注册？】
-     * 因为分页不是"框架天然会"的。你不注册这个插件，
-     * selectPage 会把 total 查成 0、也不会自动加 LIMIT，等于分页失效。
+     * 单独拆成一个 @Bean（而不是在下面直接 new），是为了让"权限标注清单"接口
+     * 能拿到同一个实例来查询标注情况 —— 两个不同实例的缓存各算各的，虽然结果一样，
+     * 但没有必要。
      *
-     * 【它背后的原理（面试常问）】
-     * 你在代码里写 selectPage(page, wrapper) 时并没有写 LIMIT。
-     * 这个插件会拦截即将执行的 SQL，做两件事：
-     *   ① 先复制一份改写成 COUNT(*) 查询，拿到总条数；
-     *   ② 再给原 SQL 拼上 LIMIT offset, size。
-     * 也就是说 —— 一次分页查询实际发了 2 条 SQL。
-     * 所以数据量很大时，count 也会慢，这时可以关闭 count 查询（用不查总数的分页）。
-     *
-     * ⚠️ 关键坑：MyBatis-Plus 3.5.9 起，这个插件的依赖（JSqlParser）被拆出去了，
-     *    pom.xml 里必须额外加 mybatis-plus-jsqlparser，否则启动就报类找不到。
+     * 开关 {@code stat.data-scope.enabled} 只为做 A/B 对比实验而存在（手册实验 E7）。
+     * 生产环境必须为 true —— 关掉它 = 所有人都能看到全部数据。
      */
     @Bean
-    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+    public DataScopeInnerInterceptor dataScopeInnerInterceptor(
+            @Value("${stat.data-scope.enabled:true}") boolean enabled) {
+        return new DataScopeInnerInterceptor(enabled);
+    }
+
+    /**
+     * 插件链。
+     *
+     * ⚠️⚠️ **Day 13 最容易被忽略的一个细节：addInnerInterceptor 的顺序 = 执行顺序。**
+     *
+     * MyBatis-Plus 会按你 add 的顺序，依次调用每个 InnerInterceptor 的 beforeQuery，
+     * 后一个拿到的 BoundSql 是前一个的**返回值**。所以：
+     *
+     *   ✓ 正确顺序（现在这样）：先数据权限、后分页
+     *       ① DataScope   把 WHERE 改成 `... AND f.region_code LIKE '4301%'`
+     *       ② Pagination  基于**改写后**的 SQL 去生成 COUNT(*) 和加 LIMIT
+     *       → COUNT 只数长沙市的行，total = 35904。分页正确。
+     *
+     *   ✗ 反过来的后果：先分页、后权限
+     *       ① Pagination  先执行 COUNT 拿到 **489600**（全量！），
+     *                      再把 SQL 改成带 LIMIT 的形式返回给下一个插件
+     *       ② DataScope   在已经带 LIMIT 的 SQL 上加过滤条件
+     *       → 数据行是对的（只返回长沙的），但 **total 报的是全省 48 万**。
+     *         前端页码器会显示 2 万多页，翻到第 10 页就全是空的。
+     *
+     * 这个 bug 的形态很有意思：**数据没错，只有总数错**。
+     * 接口 200、数据合法、用户翻两页就发现不对了。手册里"实验 E6"能实测出这个差异。
+     *
+     * 分页插件本身的原理见 Day 3 的注释，这里不重复。
+     */
+    @Bean
+    public MybatisPlusInterceptor mybatisPlusInterceptor(DataScopeInnerInterceptor dataScopeInnerInterceptor) {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+
+        // 顺序不能反，理由见上面的注释
+        interceptor.addInnerInterceptor(dataScopeInnerInterceptor);
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+
         return interceptor;
     }
 }

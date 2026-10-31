@@ -1,14 +1,17 @@
 package com.liuxudong.areaecon.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.liuxudong.areaecon.controller.vo.FactExportQuery;
 import com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionMetricStatVO;
 import com.liuxudong.areaecon.controller.vo.RegionRankVO;
 import com.liuxudong.areaecon.controller.vo.RegionYoyVO;
 import com.liuxudong.areaecon.entity.FactIndicatorValue;
+import com.liuxudong.areaecon.security.DataScope;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
@@ -61,6 +64,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * @param periodType  周期类型：Y 年 / Q 季 / M 月（对应表里的 period_type）
      * @param periodCodes 周期编码列表，如 ["2024","2025","2026"]（对应 IN (...) 查询）
      */
+    @DataScope(alias = "f")
     List<RegionMetricStatVO> selectCategorySummary(@Param("category") String category,
                                                   @Param("periodType") String periodType,
                                                   @Param("periodCodes") List<String> periodCodes);
@@ -91,6 +95,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * 表上明明有索引，但你的 WHERE / GROUP BY 里没有索引的最左列，
      * 索引就是一张废纸。第 6-8 天我们加一个 period_type 打头的索引来治好它。
      */
+    @DataScope(alias = "f")
     List<PeriodMetricStatVO> selectPeriodTrend(@Param("category") String category,
                                                @Param("periodType") String periodType,
                                                @Param("periodCodes") List<String> periodCodes);
@@ -126,6 +131,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *
      * @param topN 取前几名，如 10
      */
+    @DataScope(alias = "f")
     List<RegionRankVO> selectTopRegions(@Param("category") String category,
                                         @Param("periodType") String periodType,
                                         @Param("periodCodes") List<String> periodCodes,
@@ -158,6 +164,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * 它们在 Service 层用 BigDecimal 算（有除零、精度、舍入三个坑要处理）。
      * SQL 只管"取数"，业务计算放 Java —— 这样换数据库也不用改逻辑。
      */
+    @DataScope(alias = "f")
     List<RegionYoyVO> selectRegionYoy(@Param("category") String category,
                                       @Param("periodType") String periodType,
                                       @Param("basePeriod") String basePeriod,
@@ -231,6 +238,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * @param query 筛选条件（和取数用**同一个对象**，保证条件一致）
      * @return 符合条件的总行数
      */
+    @DataScope(alias = "f")
     long countForExport(@Param("query") FactExportQuery query);
 
     /**
@@ -257,7 +265,39 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * @param lastId 上一页最后一条的 id；第一页传 0
      * @param limit  每页多少条（建议 1000~5000，太小往返多、太大吃内存）
      */
+    @DataScope(alias = "f")
     List<FactIndicatorValue> selectForExportByCursor(@Param("query") FactExportQuery query,
                                                      @Param("lastId") Long lastId,
                                                      @Param("limit") int limit);
+
+    // ==================== Day 13 新增：分页（用来验证插件顺序） ====================
+
+    /**
+     * 分页查询指标值明细 —— 这个方法是专门为"验证插件顺序"加的。
+     *
+     * 【为什么非要加这个接口】
+     * 因为前 12 天所有统计都是手写 SQL、没有用过分页插件。
+     * 而"数据权限拦截器"和"分页拦截器"的**先后顺序**会直接影响 COUNT 的正确性
+     * （原因写在 MybatisPlusConfig 的注释里）。没有分页接口，这个差异根本测不出来。
+     *
+     * 【@DataScope 这里没写 alias，为什么】
+     * 因为这条 SQL 只有一张表、没有 JOIN，列名 region_code 不会歧义。
+     * 此时生成的条件是 {@code region_code LIKE '4301%'}（不带表前缀）。
+     * 如果以后给它加了 JOIN，就必须补上 alias，否则会报
+     * "Column 'region_code' in where clause is ambiguous"。
+     * **别名要不要写，取决于 SQL 里有没有第二张表 —— 不是取决于习惯。**
+     *
+     * 【⚠️ @Select 手写 SQL 必须自己写 deleted = 0】
+     * 这条规律从第 5 天讲到第 13 天，凡是手写 SQL 都躲不掉 @TableLogic 不生效这件事。
+     *
+     * 【分页参数怎么传】
+     * MP 规定：方法第一个参数是 {@code IPage}，且返回值是 {@code IPage} 或 {@code List}。
+     * 它会自动：① 复制一条 COUNT(*) 查总数 ② 给原 SQL 加 LIMIT。
+     * 这两步发生在 PaginationInnerInterceptor 里，和数据权限插件的顺序关系见配置类注释。
+     */
+    @DataScope
+    @Select("SELECT id, region_code, indicator_code, period_code, period_type, "
+            + "indicator_value, data_source, deleted, create_time, update_time "
+            + "FROM fact_indicator_value WHERE deleted = 0 ORDER BY id")
+    Page<FactIndicatorValue> selectFactPage(Page<FactIndicatorValue> page);
 }

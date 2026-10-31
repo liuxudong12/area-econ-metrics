@@ -46,8 +46,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BizException.class)
     public Result<Void> handleBizException(BizException e) {
         // 业务异常是"预期内"的，用 warn 就够了，不用 error（否则日志里全是噪音、告警会被淹没）
-        log.warn("[业务异常] {}", e.getMessage());
-        return Result.fail(e.getMessage());
+        log.warn("[业务异常] code={} msg={}", e.getCode(), e.getMessage());
+        // Day 13：把 code 透出去，前端才能区分 401（去登录）/ 403（没权限）/ 500（业务规则不满足）
+        return Result.fail(e.getCode(), e.getMessage());
     }
 
     /**

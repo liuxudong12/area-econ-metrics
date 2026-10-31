@@ -7,6 +7,8 @@ import com.liuxudong.areaecon.controller.vo.RegionRankVO;
 import com.liuxudong.areaecon.controller.vo.RegionYoyVO;
 import com.liuxudong.areaecon.entity.Region;
 import com.liuxudong.areaecon.mapper.FactIndicatorValueMapper;
+import com.liuxudong.areaecon.security.DataScopeContext;
+import com.liuxudong.areaecon.security.LoginUser;
 import com.liuxudong.areaecon.service.RegionService;
 import com.liuxudong.areaecon.service.StatService;
 import org.springframework.stereotype.Service;
@@ -118,8 +120,12 @@ public class StatServiceImpl implements StatService {
         // 对外只做一件事：拼 key、交给缓存助手。
         // 注意 lambda 里调的是 loadCategorySummary —— 那段查库逻辑整个搬到了下面的私有方法，
         // 一行都没改。这样"加缓存"这个动作对原有逻辑是**零风险**的。
+        // ⚠️ Day 13：key 的最后多了一段 scopeKey()。
+        //    原因看下面 loadCategorySummary 上方的说明 —— 缓存命中的话 SQL 根本不会执行，
+        //    拦截器也就没机会改写它。**所以权限必须体现在 key 里，而不是只体现在 SQL 里。**
         String key = StatCacheHelper.buildKey(
-                "category-summary", category, periodType, StatCacheHelper.joinSorted(periodCodes));
+                "category-summary", category, periodType,
+                StatCacheHelper.joinSorted(periodCodes), currentScopeKey());
         return cache.getList(key, RegionMetricStatVO.class,
                 () -> loadCategorySummary(category, periodType, periodCodes));
     }
@@ -163,7 +169,8 @@ public class StatServiceImpl implements StatService {
     @Override
     public List<PeriodMetricStatVO> categoryTrend(String category, String periodType, List<String> periodCodes) {
         String key = StatCacheHelper.buildKey(
-                "trend", category, periodType, StatCacheHelper.joinSorted(periodCodes));
+                "trend", category, periodType,
+                StatCacheHelper.joinSorted(periodCodes), currentScopeKey());
         return cache.getList(key, PeriodMetricStatVO.class,
                 () -> loadCategoryTrend(category, periodType, periodCodes));
     }
@@ -190,7 +197,7 @@ public class StatServiceImpl implements StatService {
         //    **缓存串数据的头号原因就是"key 少带了参数"。**
         //    口诀：**凡是会影响 SQL 结果的入参，一个都不能漏进 key。**
         String key = StatCacheHelper.buildKey("top-regions", category, periodType,
-                StatCacheHelper.joinSorted(periodCodes), String.valueOf(topN));
+                StatCacheHelper.joinSorted(periodCodes), String.valueOf(topN), currentScopeKey());
         return cache.getList(key, RegionRankVO.class,
                 () -> loadTopRegions(category, periodType, periodCodes, topN));
     }
@@ -240,7 +247,7 @@ public class StatServiceImpl implements StatService {
         //   所以：**参数在语义上有角色时，一律按固定位置拼进 key，不要排序、不要去重。**
         //   判断标准就一句：把两个值交换一下，SQL 的结果会不会变？会变 → 不能排序。
         String key = StatCacheHelper.buildKey(
-                "yoy", category, periodType, basePeriod, currentPeriod);
+                "yoy", category, periodType, basePeriod, currentPeriod, currentScopeKey());
         return cache.getList(key, RegionYoyVO.class,
                 () -> loadRegionYoy(category, periodType, basePeriod, currentPeriod));
     }
@@ -304,6 +311,48 @@ public class StatServiceImpl implements StatService {
             result.add(row);
         }
         return result;
+    }
+
+    /**
+     * 【Day 13 新增】当前请求的"权限指纹"，用来拼进缓存 key。
+     *
+     * 这一段是整个 Day 13 里**最容易漏、后果最严重**的地方，单独讲清楚：
+     *
+     * 【为什么光有 SQL 拦截器还不够】
+     * 第 7 天给这四个接口加了缓存。缓存命中的时候，整个流程是：
+     *     请求 → 拼 key → 命中 Redis → 直接返回
+     *                   ↑
+     *              **根本不查库，SQL 压根没执行**
+     * 而数据权限是靠"改写 SQL"实现的 —— SQL 不执行，权限就不生效。
+     *
+     * 于是必然发生这件事：
+     *   ① admin（全量）第一个请求 /api/stat/category-summary，
+     *      拿到 150 个区域，写进 key = stat:category-summary:工业:Y:2024,2025,2026
+     *   ② changsha（长沙）请求同样的参数 → **同一个 key** → 命中 → 直接拿到 150 个区域
+     *   ③ 长沙的管理员看到了全省数据。接口 200，日志正常，SQL 一次没跑。
+     *
+     * 这不是假设，这就是第 7 天讲的那条铁律被违反的后果：
+     *      **凡是会影响 SQL 结果的入参，一个都不能漏进 key。**
+     * 第 7 天漏的是 topN，第 13 天要漏的就是"用户的数据范围"。
+     *
+     * 【为什么不能直接把 regionCode 拼进 key】
+     * 因为有两种"看起来一样、结果差 48 万行"的情况：
+     *     data_scope = ALL         → 看全部       regionCode 可能是 "430000"，也可能是 null
+     *     data_scope = REGION + null → 一行都看不到
+     * 直接拼 regionCode 的话，{@code null} 会被 buildKey 转成 "-"，
+     * 而 ALL 用户如果 regionCode 也恰好是 null，两者就撞成一个 key 了。
+     * 所以统一走 {@link LoginUser#scopeKey()} —— 语义差异在那个方法里收敛成三种值：
+     *     ALL / R4301 / NONE
+     *
+     * 【为什么取不到用户时给 "NOAUTH" 而不是 "ALL"】
+     * 因为取不到用户说明请求没有经过身份拦截器（异步线程、定时任务、直接单测）。
+     * 这种情况下的 SQL 会被拦截器拒绝（抛 403），缓存也永远不会被写入。
+     * 给它一个独立的 key，是为了**万一将来缓存逻辑变了**，也不会跟全量用户的缓存混在一起。
+     * 又是那句话：默认值往"更严格"的方向选。
+     */
+    private String currentScopeKey() {
+        LoginUser user = DataScopeContext.get();
+        return user == null ? "NOAUTH" : user.scopeKey();
     }
 
     /**

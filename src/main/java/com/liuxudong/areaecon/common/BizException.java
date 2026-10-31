@@ -26,11 +26,36 @@ import java.io.Serializable;
  */
 public class BizException extends RuntimeException implements Serializable {
 
+    /**
+     * 【Day 13 新增】错误码。
+     *
+     * 之前只有一句话，所有业务异常统一返回 500。加了数据权限之后不够用了 ——
+     * 因为现在有两类"不是用户的错、也不是系统的错"的情况必须区分开：
+     *   401 没带身份      → 用户该去登录
+     *   403 身份不够/数据越权 → 用户该去找管理员申请权限
+     * 前端拿到 401 会跳登录页，拿到 403 只提示"无权限"，处理方式完全不同。
+     * **把所有失败都压成 500，等于让前端失去判断能力。**
+     *
+     * 默认值仍然是 500，所以前 12 天所有 {@code new BizException("...")} 的调用
+     * 一个字都不用改 —— 这是加字段时该有的兼容性。
+     */
+    private final int code;
+
     public BizException(String message) {
+        this(Result.CODE_FAIL, message);
+    }
+
+    public BizException(int code, String message) {
         super(message);
+        this.code = code;
     }
 
     public BizException(String message, Throwable cause) {
         super(message, cause);
+        this.code = Result.CODE_FAIL;
+    }
+
+    public int getCode() {
+        return code;
     }
 }
