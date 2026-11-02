@@ -28,16 +28,16 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Pattern;
 
 /**
- * 行级数据权限拦截器 —— Day 13 的主角。
+ * 行级数据权限拦截器。
  *
  * ============================================================================
  * 一、为什么要在 SQL 层做，而不是"查出来再在 Java 里过滤"
  * ============================================================================
- * 这是数据权限最核心的一个架构选择，面试必问。三种做法：
+ * 这是数据权限最核心的一个架构选择。三种做法：
  *
  *   ✗ 做法 A：查全量 → Java 里 for 循环 filter
  *       · 48 万行全部搬到应用内存，只为返回 35,904 行 —— 13 倍的无用 I/O
- *       · 导出的场景直接 OOM（Day 12 已实测：全量查峰值 508MB）
+ *       · 导出的场景直接 OOM（实测：全量查峰值 508MB）
  *       · 分页彻底失效：数据库给你 20 行，你过滤完剩 3 行，用户看到"每页只有 3 条"
  *
  *   ✗ 做法 B：每个 Service 方法手动 {@code wrapper.eq(...)} 加条件
@@ -54,7 +54,7 @@ import java.util.regex.Pattern;
  * 也因为应用层根本不该看到那些行。
  *
  * ============================================================================
- * 二、改写长什么样（这就是你面试要画的那张图）
+ * 二、改写长什么样
  * ============================================================================
  * <pre>
  *   改写前： SELECT f.region_code, SUM(f.indicator_value)
@@ -98,7 +98,7 @@ public class DataScopeInnerInterceptor implements InnerInterceptor {
      * 【不这么写行不行】
      * 可以，JSqlParser 也支持程序化构造 {@code LikeExpression}。
      * 这里选"校验 + 拼接"是因为代码更短更好读，且校验点只有一处。
-     * 但要记住：**这种便利只在"值有明确字符集"时成立**。
+     * 但**这种便利只在"值有明确字符集"时成立**。
      * 如果这个字段是备注、地址、搜索关键词这类自由输入，就必须老老实实走预编译参数。
      */
     private static final Pattern SAFE_REGION_PREFIX = Pattern.compile("^[0-9]{2,12}$");
@@ -122,10 +122,10 @@ public class DataScopeInnerInterceptor implements InnerInterceptor {
     private final ConcurrentMap<String, Optional<DataScope>> annotationCache = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------------------
-    // 【Day 13 新增】改写开销计数器
+    // 改写开销计数器
     //
     // 【为什么要专门统计这个】
-    // 面试官看到"每个请求都要解析一遍 SQL 再拼回去"，第一个问题一定是
+    // 看到"每个请求都要解析一遍 SQL 再拼回去"，第一个问题一定是
     // "那不是很慢吗？"。空口说"不慢"没有说服力，**要能报出数字**。
     //
     // 这里只统计"真正发生改写"的那条路径（ALL 用户和没标注解的 SQL 不计），
@@ -292,7 +292,7 @@ public class DataScopeInnerInterceptor implements InnerInterceptor {
      * 把条件 AND 进 SQL 的 WHERE。
      *
      * 【为什么必须"按别名递归找层级"】
-     * 因为我们的 SQL 里有子查询。看第 6 天的 TOP N 排行：
+     * 因为 SQL 里有子查询。看 TOP N 排行：
      * <pre>
      *   SELECT t.regionCode, RANK() OVER (...) FROM (
      *       SELECT f.region_code, SUM(...) FROM fact_indicator_value f

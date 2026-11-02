@@ -12,7 +12,7 @@ import lombok.Data;
  * 区域新增 / 修改的请求对象（VO = View Object，也有人叫 DTO）。
  *
  * 【为什么不让前端直接把 Region 实体传进来？】
- * 三个理由，面试常问：
+ * 三个理由：
  *   ① 安全：实体里有 deleted、createTime、updateTime 这些字段。如果直接用实体接收，
  *      恶意前端可以传 deleted=0 把已删除的数据"复活"，或者伪造 createTime。
  *      VO 只暴露"允许用户填的字段"，这叫"参数白名单"。
@@ -40,7 +40,7 @@ import lombok.Data;
  * 【关于 id 字段】
  * 新增时不用传（传了也会被忽略），修改时必须传。这里放在同一个 VO 里简化处理，
  * 真实项目里常见两种做法：① 拆成 XxxCreateReqVO / XxxUpdateReqVO 两个类（yudao 系项目就是这么做的）；
- * ② 用一个 VO + 校验分组（@Validated(Group.class)）。你要知道这两种写法都存在。
+ * ② 用一个 VO + 校验分组（@Validated(Group.class)）。这两种写法都存在。
  */
 @Data
 public class RegionSaveReqVO {

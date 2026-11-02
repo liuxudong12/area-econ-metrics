@@ -24,7 +24,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
- * 统计接口的缓存助手 —— Day 7 的主角。
+ * 统计接口的缓存助手。
  *
  * ============================================================================
  * 一、为什么要有这个类，而不是在每个 Service 方法里各写一遍？
@@ -109,7 +109,7 @@ public class StatCacheHelper {
     private static final String NULL_SENTINEL = "";
 
     // ========================================================================
-    // Day 8：防击穿的互斥锁 + 批量失效的 SCAN
+    // 防击穿的互斥锁 + 批量失效的 SCAN
     // ========================================================================
 
     /**
@@ -163,7 +163,7 @@ public class StatCacheHelper {
      * 是否启用"防击穿"的互斥锁。
      * 做成配置项是为了能**做 A/B 实测**：关掉它，并发打同一个冷 key，
      * 就能亲眼看到 50 个请求全部穿到数据库；打开后只穿 1 次。
-     * 面试讲"我做过缓存击穿防护"时，这组对比数字比空口说有用得多。
+     * 这组对比数字比"做了防击穿"这种描述有用得多。
      */
     @Value("${stat.cache.breakdown-guard:true}")
     private boolean breakdownGuard;
@@ -261,19 +261,19 @@ public class StatCacheHelper {
 
         // ---------- 第 2 步：未命中 —— 先抢锁，防止"缓存击穿" ----------
         //
-        // 【先把三个容易混的概念分开，面试必问】
+        // 【先把三个容易混的概念分开】
         //   · 穿透：查的是**数据库里根本不存在**的数据（比如 category="不存在的分类"），
-        //          缓存永远不可能命中 → 每次都打到库。解法：缓存空值（Day 7 已做）。
+        //          缓存永远不可能命中 → 每次都打到库。解法：缓存空值。
         //   · 击穿：**一个热点 key 过期的那一瞬间**，大量并发同时发现缓存没了，
         //          一起冲去查库。杀伤力集中在一个 key 上。解法：互斥锁（今天做）。
         //   · 雪崩：**大批 key 同时过期**（或 Redis 整个挂了），库的压力整体失衡。
-        //          解法：TTL 抖动（Day 7 已做）+ 高可用。
+        //          解法：TTL 抖动 + 高可用。
         //
         // 【今天要挡的是"击穿"，它到底怎么发生的】
         //   假设这个 key 刚好过期，此刻 50 个请求同时进来：
         //     50 个线程都执行到"第 1 步查缓存" → 都是 null → 50 个都去查库。
         //   查库只要 20 多毫秒，但已经足够 50 个请求挤进这个窗口了。
-        //   本机压测（见 docs/00-第8天操作手册.md）能实测出 50 次查库 vs 1 次查库的差别。
+        //   本机压测能实测出 50 次查库 vs 1 次查库的差别。
         //
         // 【锁怎么加才安全 —— 三个要点，缺一个就是线上事故】
         //   ① 必须是 SETNX（setIfAbsent）："不存在才写入"，天然互斥；
@@ -393,7 +393,7 @@ public class StatCacheHelper {
     }
 
     /**
-     * 【Day 8 新增】按模式批量删除缓存。
+     * 按模式批量删除缓存。
      *
      * ⚠️⚠️ **绝对不能用 {@code KEYS} 命令**（{@code redis.keys("stat:*")}）。
      *   Redis 是**单线程**的，KEYS 会把整个库的所有 key 一次性遍历一遍，
@@ -433,7 +433,7 @@ public class StatCacheHelper {
     }
 
     /**
-     * 【Day 8 新增】清空本项目所有统计缓存。
+     * 清空本项目所有统计缓存。
      *
      * 什么时候调它：**任何会让统计结果发生变化的数据变更之后**。
      * 本项目里就是 dim_region 的增删改（因为统计结果里的"区域名称"是它提供的）。
@@ -465,7 +465,7 @@ public class StatCacheHelper {
     }
 
     // ========================================================================
-    // 锁与并发相关（Day 8）
+    // 锁与并发相关
     // ========================================================================
 
     /**
@@ -518,7 +518,7 @@ public class StatCacheHelper {
                 Thread.sleep(WAIT_INTERVAL_MILLIS);
             } catch (InterruptedException e) {
                 // 被中断时必须恢复中断标记再退出，否则上层感知不到"有人要停我"。
-                // 这是 Thread.sleep 的标准处理方式，面试问"为什么不能吞掉 InterruptedException"就答这个。
+                // 这是 Thread.sleep 的标准处理方式（为什么不能吞掉 InterruptedException）。
                 Thread.currentThread().interrupt();
                 return null;
             }
@@ -546,7 +546,7 @@ public class StatCacheHelper {
      */
     private <T> List<T> decode(String value, String key, Class<T> elementType) {
         if (value.isEmpty()) {
-            return Collections.emptyList();   // 空值哨兵（Day 7 防穿透用的）
+            return Collections.emptyList();   // 空值哨兵（防穿透用）
         }
         try {
             return objectMapper.readValue(value, listTypeOf(elementType));
@@ -588,7 +588,7 @@ public class StatCacheHelper {
      * 【为什么用冒号 : 分隔？】
      * Redis 社区约定俗成的层级分隔符（Spring Data Redis 的 RedisCache 也默认用它）。
      * 好处是可以按层级做批量操作，比如"删掉分区统计下的所有缓存"就能用
-     * {@code stat:category-summary:*} 做模式匹配（Day 8 用 SCAN 实现）。
+     * {@code stat:category-summary:*} 做模式匹配（SCAN 实现）。
      * 另外 redis-cli 的客户端（如 Another Redis Desktop）会把冒号渲染成树形目录，
      * 一眼就能看出 key 的组织结构。
      *

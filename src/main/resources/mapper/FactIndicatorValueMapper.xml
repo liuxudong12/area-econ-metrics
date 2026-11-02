@@ -4,14 +4,14 @@
 
 <!--
   ⚠️ namespace 必须一字不差地等于 Mapper 接口的全限定名。
-     写错 = 启动时报 "Invalid bound statement (not found)"，这是新手第一大坑。
+     写错 = 启动时报 "Invalid bound statement (not found)"，这是最容易踩的一个坑。
 -->
 <mapper namespace="com.liuxudong.areaecon.mapper.FactIndicatorValueMapper">
 
     <!--
       按指标分类汇总各区域的值（大屏最典型的查询）
 
-      ⚠️ Day 6 改造：这里**去掉了 JOIN dim_region**，只 JOIN dim_indicator。
+      ⚠️ 这里**去掉了 JOIN dim_region**，只 JOIN dim_indicator。
          区域名称改由 Service 层批量查一次补上（见 StatServiceImpl.categorySummary）。
 
       【改造前 vs 改造后 —— 一条 SQL 的两种写法，差 4.6 倍】
@@ -51,7 +51,7 @@
         ORDER BY totalValue DESC
           按别名排序，最大的在前。
 
-      【#{} 和 ${} 的区别（面试高频）】
+      【#{} 和 ${} 的区别】
         #{}  预编译占位符 → JDBC 的参数绑定 → 能防 SQL 注入   ← 我们全程用这个
         ${}  字符串直接拼接 → 有注入风险 → 只在拼表名/字段名时才用
 
@@ -82,7 +82,7 @@
     </select>
 
     <!--
-      ★ Day 5 已治好的"慢查询" ★
+      ★ 索引治理后的"慢查询" ★
 
       按周期汇总某分类的值（大屏趋势折线图）。
 
@@ -92,22 +92,20 @@
                 ADD INDEX idx_tpi (period_type, period_code, indicator_code);
 
       ⚠️ 关键：这条 SQL 一个字都没改，只补了个索引就快了 13.8 倍。
-         "优化 SQL" 和 "优化索引" 是两回事，你在 Day 5 / Day 6 各碰到一种：
+         "优化 SQL" 和 "优化索引" 是两回事，这里正好各遇到一种：
            · selectPeriodTrend     → 加索引   （问题是"扫描的行太多"）
            · selectCategorySummary → 改结构   （问题是"回表次数太多"）
-         面试时能讲清这两种的区别，说明你是真在做优化，而不是套模板背答案。
 
       它和上面那条 SQL 的唯一区别：SELECT / GROUP BY 里**没有 region_code**。
       结果就是 uk_fact 索引用不上（最左列缺失），只能全表扫描 48 万行。
 
-      到时候你会：
+      复现步骤：
         ① 先执行这段 SQL，用 EXPLAIN 记下 type / key / rows
         ② 测出耗时（实测约 123ms）
         ③ 加索引：ALTER TABLE fact_indicator_value
                    ADD INDEX idx_type_period_indicator (period_type, period_code, indicator_code, region_code);
         ④ 再跑一遍，看 type 变成 range、耗时掉到个位数毫秒
 
-      那组前后对比数字，就是你简历上"索引优化"那一条。
     -->
     <select id="selectPeriodTrend"
             resultType="com.liuxudong.areaecon.controller.vo.PeriodMetricStatVO">
@@ -128,7 +126,7 @@
     </select>
 
     <!--
-      ============ Day 6 新增 · 大屏"排行榜" TOP N ============
+      ============ 大屏"排行榜" TOP N ============
 
       需求：某分类、某周期下，各区域按总值排名，取前 N 名，还要给出名次和占比。
 
@@ -138,7 +136,7 @@
         ROUND(t.totalValue / SUM(t.totalValue) OVER () * 100, 2)  → 占比(%)
 
       「OVER ()」括号里什么都不写 = 把整个结果集当成一个窗口来算。
-      这跟 GROUP BY 是**两码事**，区别必须搞清（面试常问）：
+      这跟 GROUP BY 是**两码事**，区别必须搞清：
         GROUP BY  → 把多行**压成一行**，结果行数变少（150 行 → 150 个区域，只是明细没了）
         窗口函数  → **不改行数**，只是给每一行额外挂一列计算结果
 
@@ -188,7 +186,7 @@
     </select>
 
     <!--
-      ============ Day 6 新增 · 同比增长 YoY ============
+      ============ 同比增长 YoY ============
 
       需求：某分类下，每个区域"当期值 vs 基期值"，以及增长额、增长率。
 
@@ -219,7 +217,7 @@
       【索引用得怎么样】
         period_type = ? 是等值，period_code IN (?, ?) 是范围，正好是
         idx_tpi(period_type, period_code, indicator_code) 的最左两列 → 走 range 扫描。
-        这就是 Day 5 那个索引的"副产品价值"：**新写的统计 SQL 也自动沾光了**。
+        这就是前面那个索引的"副产品价值"：**新写的统计 SQL 也自动沾光了**。
         这说明索引设计要考虑的是"这一类查询"，而不是"这一条查询"。
 
       【增长额和增长率为什么不在这里算？】
@@ -242,7 +240,7 @@
         ORDER BY f.region_code
     </select>
     <!--
-      ==================== Day 9：批量插入 ====================
+      ==================== 批量插入 ====================
 
       这条 SQL 长这样（假设 list 里有 3 条）：
         INSERT INTO fact_indicator_value
@@ -278,7 +276,7 @@
     -->
 
     <!--
-      ==================== Day 10：从"插入"升级为"重入" ====================
+      ==================== 从"插入"升级为"可重入" ====================
 
       【问题：一条 INSERT，让"重试"变成永远不可能成功】
 
@@ -344,7 +342,7 @@
             INSERT INTO t (...) VALUES (...) AS new
             ON DUPLICATE KEY UPDATE c = new.c
         官方已把 VALUES(col) 标为 deprecated（还能用，会出 warning）。
-        这里保留 VALUES() 是为了兼容老版本 + 面试官最熟悉这种写法。
+        这里保留 VALUES() 是为了兼容老版本写法。
     -->
     <insert id="insertBatch">
         INSERT INTO fact_indicator_value
@@ -362,7 +360,7 @@
     </insert>
 
     <!-- ==================================================================
-         Day 12：明细导出
+         明细导出
          ==================================================================
 
          【★ 这段 <sql> 片段是今天的第一个技术点：条件只写一遍 ★】
@@ -436,7 +434,7 @@
       【前提：排序键必须唯一且有序】
         这里用主键 id —— 自增、唯一、有索引，天然满足。
         如果业务上必须按 update_time 排序，那就要用 (update_time, id) 做联合游标，
-        否则同一时刻的多条记录会漏掉或重复（这个细节面试常考）。
+        否则同一时刻的多条记录会漏掉或重复。
 
       【为什么 ORDER BY id 而不是 ORDER BY region_code, indicator_code】
         id 是聚簇索引（InnoDB 主键索引的叶子节点就是数据行本身），

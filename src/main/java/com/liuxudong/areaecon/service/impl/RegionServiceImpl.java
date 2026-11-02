@@ -61,7 +61,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
     private static final Logger log = LoggerFactory.getLogger(RegionServiceImpl.class);
 
     /**
-     * Day 8 新增：区域写完要清统计缓存。
+     * 区域写完要清统计缓存。
      *
      * 【为什么区域服务要管统计缓存？这不是越界了吗？】
      * 因为**数据的所有者最清楚自己什么时候被改了**。
@@ -126,7 +126,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
                 .list();
     }
 
-    // ==================== Day 3：写操作 ====================
+    // ==================== 写操作 ====================
     // 下面三个方法都加了 @Transactional(rollbackFor = Exception.class)。
     //
     // 【为什么必须写在 Service 上】
@@ -162,7 +162,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         Region region = new Region();
         BeanUtils.copyProperties(reqVO, region);
 
-        // 新增时 id 必须为空 —— 留着值会让 MyBatis-Plus 以为你要指定主键，破坏自增。
+        // 新增时 id 必须为空 —— 留着值会让 MyBatis-Plus 以为要指定主键，破坏自增。
         region.setId(null);
         if (region.getSort() == null) {
             region.setSort(0);   // 表里 sort 是 NOT NULL，不传就给 0
@@ -172,7 +172,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         // 执行完后，数据库生成的自增 id 会被**回填**到 region 对象里（靠 IdType.AUTO）。
         save(region);
 
-        // 【Day 8】新增区域后清统计缓存。
+        // 新增区域后清统计缓存。
         // 严格说这一步"多数时候可以省"：新区域在 fact 表里还没有数据，
         // 所以已有的统计结果不会变。但有个真实的边界情况：
         //   以前把某个区域逻辑删除了（统计数据里它消失了），现在又用**同一个 region_code**
@@ -214,7 +214,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         // 且会自动带上逻辑删除条件：UPDATE dim_region SET ... WHERE id = ? AND deleted = 0
         updateById(update);
 
-        // 【Day 8】**精准判断要不要清缓存** —— 这是今天最值得学的一个判断习惯。
+        // **精准判断要不要清缓存** —— 这里有个容易想当然的地方。
         //
         // 统计接口用到了区域的哪几个字段？只有 region_code（做关联）和 region_name（给前端显示）。
         // 所以：
@@ -248,14 +248,14 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
         // 数据**没有真的消失**，只是被标记了。这就是逻辑删除。
         removeById(id);
 
-        // 【Day 8】删除区域必须清缓存 —— 而且这里没有"要不要清"的余地：
-        // 统计结果里"补不到区域名就丢弃"（Day 6 的语义），所以这个区域会从结果里整条消失，
+        // 删除区域必须清缓存 —— 而且这里没有"要不要清"的余地：
+        // 统计结果里"补不到区域名就丢弃"，所以这个区域会从结果里整条消失，
         // 结果集本身（150 条变 149 条）都变了。不清缓存，前端会继续看到那个已删除的区域。
         evictStatCacheAfterCommit("删除区域 id=" + id + " code=" + old.getRegionCode());
     }
 
     /**
-     * 【Day 8 最核心的一段】让缓存失效，而且是**在事务提交之后**才删。
+     * 【最核心的一段】让缓存失效，而且是**在事务提交之后**才删。
      *
      * ========================================================================
      * 一、为什么删缓存必须等事务提交？这就要讲"缓存一致性"的经典事故了
@@ -275,7 +275,7 @@ public class RegionServiceImpl extends ServiceImpl<RegionMapper, Region> impleme
      * ========================================================================
      * 二、那"先删缓存再更新库" vs "先更新库再删缓存"，到底选哪个？
      * ========================================================================
-     * 这是面试最爱问的一题，标准答案不是背结论，而是**说清两者的失败场景**：
+     * 这题的关键不是结论，而是**说清两者的失败场景**：
      *
      *   · 先删缓存、再更新库（Cache Aside 的淘汰式）：
      *     删完、库还没更新的空档里，读线程会把旧值查出来回填 → 脏数据躺到 TTL 到期。

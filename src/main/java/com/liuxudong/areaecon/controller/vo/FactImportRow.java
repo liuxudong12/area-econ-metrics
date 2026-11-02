@@ -10,7 +10,7 @@ import java.math.BigDecimal;
  * Excel 导入时的"一行"。
  *
  * 【为什么要单独建一个类，不直接用 FactIndicatorValue 实体？】
- * 这是 Day 3 讲过的"VO 参数白名单"思路，在导入场景里同样成立，而且更明显：
+ * 这是"VO 参数白名单"思路，在导入场景里同样成立，而且更明显：
  *
  *   ① Excel 里只有 5 列，而实体有 11 个字段（id / deleted / createTime / updateTime ...）。
  *      直接用实体接收，等于把 id、deleted 这些字段暴露给上传文件的人 ——
@@ -29,11 +29,11 @@ import java.math.BigDecimal;
  * ⚠️ 两个容易踩的点：
  *   1. 表头文字必须**一字不差**（包括空格、全角/半角括号）。
  *      写"区域代码"就绑不上，字段会是 null —— 而且**不报错**，只是数据全空。
- *      （更隐蔽：如果所有字段都没绑上，你会得到一堆全是 null 的对象。）
+ *      （更隐蔽：如果所有字段都没绑上，得到的是一堆全 null 的对象。）
  *   2. 中文表头不要带 BOM 或前后空格。用 Excel 另存为 CSV 再转回来时特别容易出现。
  *
  * 【为什么指标值用 BigDecimal 而不是 Double / double】
- * 和第 8 天的规矩同源：这是金额类的经济指标，用 double 会有精度误差
+ * 同一条规矩：这是金额类的经济指标，用 double 会有精度误差
  * （0.1 + 0.2 != 0.3）。数据库列也是 DECIMAL(20,4)，Java 侧用 BigDecimal 类型才对得上。
  * EasyExcel 读 BigDecimal 时会做转换；如果单元格里写的是 "abc"，
  * 会抛 ExcelDataConvertException，里面有出错的行号 —— 这个我们后面要捕获。
@@ -62,7 +62,7 @@ public class FactImportRow {
     private BigDecimal indicatorValue;
 
     /**
-     * Day 11 新增：这一行在 Excel 里的行号（1-based，含表头）。
+     * 这一行在 Excel 里的行号（1-based，含表头）。
      *
      * 【为什么用 @ExcelIgnore】
      * 加了 @ExcelProperty 的字段会被 EasyExcel 当成"一列"：读的时候去表头里找对应列，

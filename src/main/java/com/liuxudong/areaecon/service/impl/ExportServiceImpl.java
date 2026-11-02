@@ -49,7 +49,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 导出服务实现。
  *
- * 这里是今天所有技术点的落地处，读代码时请对照 docs/00-第12天操作手册.md：
+ * 这里是导出链路的完整落地：
  *   ① 游标分页（不是 LIMIT offset）—— 见 {@link #exportFact}
  *   ② 流式写出、内存恒定         —— 见 {@link #exportFact} 的 while 循环
  *   ③ 所有校验前置于 setHeader    —— 见 {@link #begin}
@@ -174,7 +174,7 @@ public class ExportServiceImpl implements ExportService {
 
             // ---------- ④ 维表装进内存当字典 ----------
             // 区域 1350 行、指标 18 行 —— 一次查完放 Map，之后每行只用 O(1) 查表。
-            // 为什么不在 SQL 里 JOIN？Day 6 已经证明过：JOIN 会让 48 万行**每一行**
+            // 为什么不在 SQL 里 JOIN？前面的实验已经证明过：JOIN 会让 48 万行**每一行**
             // 都去维表回表一次（48 万次随机 IO）；而放内存里就是 48 万次哈希查找。
             // 前提是**维表足够小且变化不频繁** —— 这个前提一定要说清楚。
             Map<String, String> regionNames = loadRegionNames();
@@ -694,7 +694,7 @@ public class ExportServiceImpl implements ExportService {
      *
      * 反过来判断：如果一个操作失败会导致业务状态不一致（比如"导入任务状态"），
      * 那它就**必须**和主流程同成败，不能吞异常。
-     * 「旁路可以吞，记账不能吞」—— 这条判断标准比记住某个具体写法有用。
+     * 「旁路可以吞，记账不能吞」—— 这条判断标准比记某个具体写法有用。
      */
     private void saveLog(ExportLog l) {
         try {

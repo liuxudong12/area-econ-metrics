@@ -93,7 +93,7 @@ public class ImportServiceImpl implements ImportService {
     private String importDir;
 
     // ==========================================================================
-    // Day 10 新增：重试相关的三个配置
+    // 重试相关的三个配置
     // ==========================================================================
 
     /**
@@ -126,19 +126,19 @@ public class ImportServiceImpl implements ImportService {
     /**
      * 【实验用】故障注入：跑到第几批时强制失败。-1 表示关闭。
      *
-     * 这是为了做 Day 10 的对照组实验 —— 没有它就没法复现
+     * 这是为了做对照组实验 —— 没有它就没法复现
      * "第 10 批写完、第 11 批断了"这个真实场景，也就拿不出"重试前 vs 重试后"的数字。
      *
      * ⚠️ 生产环境必须保持 -1。它默认就是 -1，不配就不会生效。
      *    真实项目里这类开关一般放在 test profile 里，或者用混沌工程工具
      *    （ChaosBlade / ToxiProxy）在基础设施层注入，不写进业务代码。
-     *    这里写进来是因为：自建项目要让面试官看到"我知道怎么验证它"。
+     *    这里写进来是因为：需要能验证它确实生效。
      */
     @Value("${stat.import.test.fail-at-batch:-1}")
     private int failAtBatch;
 
     /**
-     * Day 11：一个任务最多记录多少条错误明细。
+     * 一个任务最多记录多少条错误明细。
      *
      * 默认 10000。为什么不是无限：
      *   · 一个 10 万行全错的文件，会给数据库灌 10 万行错误日志
@@ -480,7 +480,7 @@ public class ImportServiceImpl implements ImportService {
         //   这是**无锁互斥**，比 synchronized / Redis 锁都轻 ——
         //   因为"判断 + 修改"在同一条 SQL 里原子完成（UPDATE 会加行锁）。
         //
-        // ★ Day 10 顺手修了 Day 9 的一个隐蔽 bug：
+        // ★ 这里顺手修过一个隐蔽 bug：
         //   原来写的是
         //       AsyncTask running = new AsyncTask();
         //       running.setStatus(RUNNING);
@@ -519,7 +519,7 @@ public class ImportServiceImpl implements ImportService {
             EasyExcel.read(in, FactImportRow.class, listener).sheet().doRead();
 
             if (listener.getErrorRows() > 0) {
-                // ★★ Day 11 的关键顺序：先把错误明细落库，再抛异常 ★★
+                // ★★ 关键顺序：先把错误明细落库，再抛异常 ★★
                 //
                 //   为什么不能"先抛异常，在 catch 里落库"？
                 //   因为 catch 收的是所有异常（数据库断了、文件没了、校验失败），
@@ -545,7 +545,7 @@ public class ImportServiceImpl implements ImportService {
 
             // 校验通过才开始写。这一步是"分批提交"——每 500 行一个独立事务。
             // 如果第 10 批写库失败（比如数据库连接断了），前 9 批已经提交、撤不回来了。
-            // 这种"半截数据"由 Day 10 的"幂等重试"（upsert）来收尾，而不是靠事务。
+            // 这种"半截数据"由"幂等重试"（upsert）来收尾，而不是靠事务。
             writeAllInBatches(allRows, defaultBatchSize, written);
 
             long elapsed = System.currentTimeMillis() - start;
@@ -574,7 +574,7 @@ public class ImportServiceImpl implements ImportService {
             // ★ 所有失败都收敛到一个地方处理：分类 → 重试 / 终结。
             //   为什么不在 catch 里直接 sleep 然后重试？见 handleFailure 的注释。
             //
-            //   Day 11 改成传 listener 而不是两个数字：
+            //   这里传 listener 而不是两个数字：
             //   失败处理需要的不只是 totalRows，还需要 errorRows（有多少行校验没过）。
             //   多传两个 long 参数虽然也能用，但调用点会变成
             //       handleFailure(task, listener.getTotalRows(), written.get(),
@@ -587,7 +587,7 @@ public class ImportServiceImpl implements ImportService {
 
     /**
      * ==========================================================================
-     * Day 10 核心：失败之后到底怎么办
+     * 核心问题：失败之后到底怎么办
      * ==========================================================================
      *
      * 【★ 为什么不在 catch 里 sleep 1 秒然后自己重跑？—— 这是最容易写错的地方】
@@ -620,7 +620,7 @@ public class ImportServiceImpl implements ImportService {
      *     到点了由调度器扫出来重新投递（见 ImportRetryScheduler）。
      *
      * 一句话：**重试的"记忆"必须落库，不能留在内存里。**
-     * 这和 Day 9"线程池只干活、任务表才记账"是同一条原则的延伸。
+     * 这和"线程池只干活、任务表才记账"是同一条原则的延伸。
      *
      * ==========================================================================
      * 【为什么是 RETRY_WAIT 而不是直接改回 PENDING】
@@ -635,7 +635,7 @@ public class ImportServiceImpl implements ImportService {
      *                 而不是重新查库 —— 因为这个任务只可能被当前线程持有，
      *                 抢占式 update 已经保证了排他性）
      * @param listener 这次的解析器。总行数和错误行数都从它身上取，
-     *                 比在调用点传一堆 long 参数清楚（Day 11 改）
+     *                 比在调用点传一堆 long 参数清楚
      * @param written  本次真正提交成功的行数
      * @param e        原始异常
      */
@@ -795,7 +795,7 @@ public class ImportServiceImpl implements ImportService {
             batchNo++;
 
             // ==============================================================
-            // 【Day 10 实验用 · 故障注入】默认关闭（failAtBatch = -1）
+            // 【故障注入 · 测试用】默认关闭（failAtBatch = -1）
             // ==============================================================
             // 目的：造出"前面的批次已经提交、中间某一批突然失败"这个真实场景。
             //
@@ -828,11 +828,11 @@ public class ImportServiceImpl implements ImportService {
      * 好处是长事务问题消失；代价是失去全局原子性 ——
      * 第 10 批失败时，前 9 批（4500 行）已经落库了。
      *
-     * 【那这 4500 行怎么办？—— Day 10 已经给了答案】
+     * 【那这 4500 行怎么办？—— 用 upsert 收尾】
      * 如果重试时还是普通 INSERT，这 4500 行会撞唯一索引 → 整批失败 → 永远重试不成功。
-     * 所以 Day 10 把 insertBatch 改成了 `INSERT ... ON DUPLICATE KEY UPDATE`（upsert），
+     * 所以 insertBatch 改成了 `INSERT ... ON DUPLICATE KEY UPDATE`（upsert），
      * 让"重复插入"变成"覆盖更新"，重试才真正安全。
-     * **"可重试"的前提是"可重入"。** 这句话值得记住。
+     * **"可重试"的前提是"可重入"。**
      *
      * 注意这里的分工：
      *   事务负责"一批之内的原子性"（500 行要么全进要么全不进）
@@ -846,7 +846,7 @@ public class ImportServiceImpl implements ImportService {
     }
 
     // ==========================================================================
-    // Day 11：错误明细落库
+    // 错误明细落库
     // ==========================================================================
 
     /**
@@ -864,7 +864,7 @@ public class ImportServiceImpl implements ImportService {
      * 这就是本方法用自己那份 transactionTemplate 的原因：
      * **它先提交，再让异常往上走。** 提交之后，后面无论怎么回滚都动不到它。
      *
-     * 这和 Day 10 "任务状态更新不能和业务数据同事务"是同一个道理的两面：
+     * 这和"任务状态更新不能和业务数据同事务"是同一个道理的两面：
      *   · 业务数据要能回滚（一行都不写）
      *   · 失败的原因不能回滚（否则用户永远不知道错在哪）
      * 两者必须分开。
@@ -1051,7 +1051,7 @@ public class ImportServiceImpl implements ImportService {
         vo.setRetryCount(task.getRetryCount());
         vo.setNextRetryTime(task.getNextRetryTime());
 
-        // Day 11：有错误明细时，把下载地址直接下发。
+        // 有错误明细时，把下载地址直接下发。
         // 判断条件用 (errorRows > 0) 而不是 (status == FAILED)：
         // 重试等待中的任务也可能已经有错误明细了（上一轮解析出来的）。
         // 让它随时能下，用户不用等任务彻底结束 —— 那可能要 7 秒。
@@ -1084,7 +1084,7 @@ public class ImportServiceImpl implements ImportService {
         } else if (AsyncTaskStatus.RUNNING.equals(task.getStatus())) {
             message = "任务执行中，请稍候";
         } else if (AsyncTaskStatus.RETRY_WAIT.equals(task.getStatus())) {
-            // ★ Day 10：这是"失败后正在等退避时间"的状态，不能笼统说"排队中"
+            // ★ 这是"失败后正在等退避时间"的状态，不能笼统说"排队中"
             //   用户看到"排队中"会以为很顺利，实际上刚刚失败过一次。
             //   明说还差几秒、还剩几次机会，用户才知道该不该继续等。
             long remain = task.getNextRetryTime() == null ? 0

@@ -21,7 +21,7 @@ import java.util.List;
 /**
  * 区域查询接口 —— 本项目**第一个真正从数据库读数据**的接口。
  *
- * 【和 Day1 的 PingController 有什么区别？】
+ * 【和 PingController 有什么区别？】
  * /ping 返回的是一个写死的字符串，没有任何技术含量。
  * 这里开始，数据从 MySQL 取出来，经过 Service、Mapper，再变成 JSON 返回给你。
  * 这一条链路（Controller → Service → Mapper → DB）就是后端开发的主干道，
@@ -77,7 +77,7 @@ public class RegionController {
      * 返回的 IPage 对象里包含：records（本页数据）、total（总条数）、
      * current（当前页）、size（每页条数）、pages（总页数）。
      *
-     * 【面试常问】分页的 total 是怎么来的？
+     * 【分页的 total 是怎么来的？】
      * 分页插件会把你的查询改写成 COUNT(*) 先跑一次拿总数，再拼 LIMIT 跑一次拿数据。
      * 所以一次分页 = 两条 SQL。数据量大时 count 本身也可能变慢。
      */
@@ -100,7 +100,7 @@ public class RegionController {
      *
      * 【一个细节】类上还有 /list 和 /page 两个固定路径。
      * Spring 匹配时"精确路径优先于路径变量"，所以 /api/region/list 不会被当成
-     * regionCode = "list" 处理。这个优先级规则面试也可能被问到。
+     * regionCode = "list" 处理。这个优先级规则容易踩错。
      */
     @GetMapping("/{regionCode}")
     public Result<Region> detail(@PathVariable String regionCode) {
@@ -111,7 +111,7 @@ public class RegionController {
         return Result.ok(region);
     }
 
-    // ==================== Day 3：写操作 ====================
+    // ==================== 写操作 ====================
     //
     // 【关于 HTTP 方法和路径的设计（RESTful 风格）】
     //   查列表   GET    /api/region/list
@@ -128,7 +128,7 @@ public class RegionController {
     //   POST 不是幂等的 —— 同样的请求发两次，会新增两条数据；
     //   PUT 是幂等的 —— 同样的请求发两次，结果一样（都是"改成这个值"）。
     //   所以"新增"必须用 POST，"按 id 整体覆盖更新"用 PUT。
-    //   面试问"幂等"时，这就是最基础的落点。
+    //   这是幂等最基础的落点。
 
     /**
      * 新增区域。
@@ -143,7 +143,7 @@ public class RegionController {
      *
      * 【@RequestBody 的作用】
      * 把 HTTP 请求体里的 JSON 反序列化成 Java 对象。
-     * 少了它，Spring 会以为你要从 URL 参数里拼对象，结果是所有字段都是 null。
+     * 少了它，Spring 会试图从 URL 参数里拼对象，结果是所有字段都是 null。
      *
      * 返回新记录的 id，前端拿到后可以直接跳详情页。
      */
@@ -173,7 +173,7 @@ public class RegionController {
      *
      * 删完再用 GET /api/region/431400 是查不到的（因为查询自动带 deleted = 0），
      * 但你去数据库里 SELECT * 能看到那一行，只是 deleted 变成了 1。
-     * **这就是逻辑删除最直观的验证方式，建议你亲手做一遍。**
+     * **这是验证逻辑删除最直观的方式。**
      */
     @DeleteMapping("/{id}")
     public Result<Boolean> delete(@PathVariable Long id) {

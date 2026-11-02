@@ -16,7 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
  *                  优点：接口秒回，不会占着 Tomcat 线程，也不会被网关的超时掐断。
  *                  代价：要自己维护任务表、状态机、线程池、幂等、重试。
  *
- * 【面试怎么说这段】
+ * 【这段的设计要点】
  *   "同一个功能我做了两版。第一版同步，1 万行要 X 秒，浏览器早就超时了，
  *    用户还会重复点击导致重复提交。第二版改成异步：接口只做三件事 ——
  *    存文件、算 MD5 去重、投递任务，200 毫秒内返回 taskId，
@@ -57,7 +57,7 @@ public interface ImportService {
     ImportResultVO getTask(Long taskId);
 
     /**
-     * 把一条已落库的任务投递到线程池 —— 供重试调度器使用（Day 10）。
+     * 把一条已落库的任务投递到线程池 —— 供重试调度器使用。
      *
      * 【为什么调度器不自己调线程池，非要绕一层接口？】
      * 因为"怎么执行一个任务"（解析、分批、事务、失败分类）是 ImportService 的内部知识。
@@ -73,7 +73,7 @@ public interface ImportService {
     void dispatch(Long taskId);
 
     /**
-     * 手动重试（Day 10）—— 把 FAILED / RETRY_WAIT 的任务重新投递。
+     * 手动重试 —— 把 FAILED / RETRY_WAIT 的任务重新投递。
      *
      * 【和自动重试的分工】
      *   自动重试：只处理"临时故障"，退避 1/2/4 秒，最多 3 次，全自动

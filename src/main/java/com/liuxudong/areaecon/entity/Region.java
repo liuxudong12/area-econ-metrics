@@ -29,7 +29,7 @@ import java.time.LocalDateTime;
  * 加了它之后，MyBatis-Plus 的 delete 语句会自动变成 UPDATE ... SET deleted = 1，
  * 而所有 select 会自动帮你带上 WHERE deleted = 0 —— 你什么都不用写。
  *
- * 面试常问：为什么用逻辑删除而不是物理删除？
+ * 为什么用逻辑删除而不是物理删除？
  * 答：数据可追溯、可恢复；但要注意查询要带上条件（这就是为什么要框架自动加），
  *     以及唯一索引要考虑 deleted 字段（否则删过的数据会让新数据插不进去）。
  */

@@ -87,7 +87,7 @@ CREATE TABLE fact_indicator_value (
   update_time     DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   -- 业务唯一约束：同一区域 + 同一指标 + 同一周期，只能有一条数据
-  -- 这个唯一索引同时是第 11 天"幂等"的兜底保障
+  -- 这个唯一索引同时是"幂等"的兜底保障
   UNIQUE KEY uk_fact (region_code, indicator_code, period_code)
 
   -- ===========================================================
@@ -99,7 +99,7 @@ CREATE TABLE fact_indicator_value (
   --
   -- 灌完 10 万行数据后，先用 EXPLAIN 看执行计划并测耗时，
   -- 然后再执行文件末尾的「第 6-8 天 · 加索引」语句，重新对比。
-  -- 这就是你简历上"索引优化"那一条的真实来源。
+  -- 索引优化的效果就来自这条索引。
   -- ===========================================================
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指标值事实表';
 

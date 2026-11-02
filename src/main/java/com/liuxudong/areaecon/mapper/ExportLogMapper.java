@@ -15,7 +15,7 @@ import org.apache.ibatis.annotations.Mapper;
  *   ① 定时任务 DELETE ... WHERE create_time < NOW() - INTERVAL 90 DAY（分批删，别一次删太多）
  *   ② 表分区（按 create_time 月分区，直接 DROP PARTITION，比 DELETE 快几个数量级）
  *   ③ 干脆不存库，写日志文件 / 上报到监控系统
- * 本地练习项目数据量小，先不做 —— **但面试问"日志表越来越大怎么办"要知道这三条。**
+ * 本项目数据量小，先不做 —— **日志表越来越大时，这三条是常规做法。**
  */
 @Mapper
 public interface ExportLogMapper extends BaseMapper<ExportLog> {

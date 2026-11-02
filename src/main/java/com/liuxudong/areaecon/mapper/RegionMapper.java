@@ -23,9 +23,9 @@ import org.apache.ibatis.annotations.Mapper;
  *
  * 【命名约定】
  * 接口名 = 实体名 + Mapper，MyBatis 默认按这个名字去找同名的 XML（RegionMapper → RegionMapper.xml）。
- * 我们今天不需要写 XML，因为全是单表查询。第 5 天做跨表聚合统计时才需要手写 XML。
+ * 这里不需要写 XML，因为全是单表查询。跨表聚合统计时才需要手写 XML。
  *
- * 面试常问：#{} 和 ${} 的区别？
+ * #{} 和 ${} 的区别：
  * 答：#{} 是预编译占位符，会生成 ? 并由 JDBC 做参数绑定，能防 SQL 注入；
  *     ${} 是字符串直接拼接，有注入风险，只在需要拼表名/字段名之类的场景才用。
  */

@@ -36,7 +36,7 @@ public interface ImportErrorRowMapper extends BaseMapper<ImportErrorRow> {
      * 用 id 游标翻页（WHERE id > lastId ORDER BY id LIMIT N）而不是 LIMIT offset, N：
      *   · offset 越大越慢：MySQL 要先扫描并丢弃 offset 行
      *   · 游标法始终走主键范围扫描，第 1 万页和第 1 页一样快
-     * 这个技巧在大数据量分页里非常常用，面试也常问。
+     * 这个技巧在大数据量分页里非常常用。
      *
      * @param taskId     任务 ID
      * @param lastId     上一页最后一行的 id，第一页传 0

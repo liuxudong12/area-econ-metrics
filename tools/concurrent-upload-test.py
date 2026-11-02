@@ -9,7 +9,7 @@
     - 10 个响应拿到的 taskId **全部相同**
 
 【为什么用 http.client 而不是 requests / urllib】
-  Day 8 压测缓存击穿时踩过这个坑：Windows 上 urllib / requests 默认会读系统代理设置，
+  压测缓存击穿时踩过这个坑：Windows 上 urllib / requests 默认会读系统代理设置，
   每个请求额外多 ~70ms 的代理探测。10 个并发请求，客户端开销比被测逻辑还大。
   http.client.HTTPConnection 直连 localhost，不经过任何代理探测，数字才干净。
 

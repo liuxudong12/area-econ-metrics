@@ -23,7 +23,7 @@ public interface StatService {
     /**
      * 按指标分类，汇总各区域的指标值。
      *
-     * Day 6 改造：SQL 里不再 JOIN dim_region，区域名称由本方法的实现"批量补上"。
+     * 改造：SQL 里不再 JOIN dim_region，区域名称由本方法的实现"批量补上"。
      * 理由和实测数据（44.3ms → 9.52ms）写在 FactIndicatorValueMapper.xml 的注释里。
      *
      * @param category    指标分类，如"工业"
@@ -35,11 +35,11 @@ public interface StatService {
     /**
      * 按周期看趋势 —— 大屏折线图用。
      *
-     * ✅ Day 5 已优化：加 idx_tpi 索引后 133.45ms → 9.66ms（扫描行数 48.9 万 → 5,418）。
+     * ✅ 已优化：加 idx_tpi 索引后 133.45ms → 9.66ms（扫描行数 48.9 万 → 5,418）。
      */
     List<PeriodMetricStatVO> categoryTrend(String category, String periodType, List<String> periodCodes);
 
-    // ==================== Day 6 新增 ====================
+    // ==================== 聚合统计 ====================
 
     /**
      * TOP N 区域排行 —— 大屏"排行榜"用。

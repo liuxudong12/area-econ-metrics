@@ -85,7 +85,7 @@ public class ImportReportServiceImpl implements ImportReportService {
         // 因为明细有上限。一个 5 万行全错的文件，明细只存 1 万条，
         // 但用户必须知道"错了 5 万行"——否则他改完这 1 万行重传还是失败。
         long errorRows = task.getErrorRows() == null ? 0 : task.getErrorRows();
-        // 兜底：Day 10 及更早的任务没有 error_rows 这一列（值为 0），
+        // 兜底：历史任务没有 error_rows 这一列（值为 0），
         // 但明细可能存在。这时用明细条数，总比显示 0 强。
         if (errorRows < recorded) {
             errorRows = recorded;

@@ -27,7 +27,7 @@ import java.io.Serializable;
 public class BizException extends RuntimeException implements Serializable {
 
     /**
-     * 【Day 13 新增】错误码。
+     * 错误码。
      *
      * 之前只有一句话，所有业务异常统一返回 500。加了数据权限之后不够用了 ——
      * 因为现在有两类"不是用户的错、也不是系统的错"的情况必须区分开：

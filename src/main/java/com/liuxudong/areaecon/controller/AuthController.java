@@ -125,7 +125,7 @@ public class AuthController {
     }
 
     /**
-     * 改写开销 —— 回答面试官那句"每个请求都解析一遍 SQL，不慢吗"。
+     * 改写开销 —— 回答"每个请求都解析一遍 SQL，不慢吗"。
      *
      * <pre>
      *   GET /api/auth/data-scope-stats

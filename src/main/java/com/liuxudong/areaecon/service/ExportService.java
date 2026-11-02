@@ -53,7 +53,7 @@ public interface ExportService {
      * 导出统计结果（区域汇总 / 周期趋势 / TOP 排行 / 同比）。
      *
      * 结果集最大也就一千多行，所以**一次性写完**，不需要游标分页。
-     * 另外它走的是 StatService，能吃到 Day 7 加的 Redis 缓存 ——
+     * 另外它走的是 StatService，能吃到 Redis 缓存 ——
      * 缓存命中时导出几乎不碰数据库。
      */
     void exportStat(StatExportQuery query, HttpServletResponse response);

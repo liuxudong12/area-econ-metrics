@@ -9,7 +9,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 系统用户（sys_user）—— Day 13 数据权限的"人"这一侧。
+ * 系统用户（sys_user）—— 数据权限的"人"这一侧。
  *
  * 【这个项目没有登录功能，为什么还要用户表】
  * 因为数据权限的本质是"回答一个问题：**现在这次请求是谁发的**"。

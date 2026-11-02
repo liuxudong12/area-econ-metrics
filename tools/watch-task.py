@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-观察异步导入任务的完整生命周期（Day 10 重试实验用）。
+观察异步导入任务的完整生命周期。
 
 【为什么需要这个脚本】
 重试实验要拿到的不是"最终成功/失败"，而是**中间每一步发生在第几秒**：
@@ -16,10 +16,10 @@
 【为什么轮询间隔用 200ms 而不是 1 秒】
 因为退避时间是 1 秒。如果用 1 秒轮询，就会漏掉短暂经过的 RETRY_WAIT 状态，
 测出来的间隔误差最大到 1 秒 —— 跟被测的 1 秒一样大，数据就没意义了。
-**测量工具的精度必须明显高于被测量的量级。** （这条在 Day 8 压测时也踩过）
+**测量工具的精度必须明显高于被测量的量级。** （压测时踩过）
 
 【为什么用 http.client 不用 requests】
-Day 8 踩过坑：Windows 上 urllib/requests 会读系统代理设置，
+踩过的坑：Windows 上 urllib/requests 会读系统代理设置，
 每次请求多 70ms 左右。测 1 秒级的间隔，70ms 误差已经占 7% 了。
 http.client 是标准库里最底层的，不碰代理。
 
@@ -68,7 +68,7 @@ def request(method, path, body=None, headers=None):
 
 def upload(file_path):
     """用 multipart/form-data 上传文件，返回 taskId。"""
-    boundary = "----Day10Boundary" + uuid.uuid4().hex
+    boundary = "----FormBoundary" + uuid.uuid4().hex
     filename = os.path.basename(file_path)
 
     with open(file_path, "rb") as f:

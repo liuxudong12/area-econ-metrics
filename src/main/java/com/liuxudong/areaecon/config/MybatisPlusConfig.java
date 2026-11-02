@@ -24,7 +24,7 @@ import org.springframework.context.annotation.Configuration;
 public class MybatisPlusConfig {
 
     /**
-     * 【Day 13 新增】行级数据权限拦截器。
+     * 行级数据权限拦截器。
      *
      * 单独拆成一个 @Bean（而不是在下面直接 new），是为了让"权限标注清单"接口
      * 能拿到同一个实例来查询标注情况 —— 两个不同实例的缓存各算各的，虽然结果一样，
@@ -42,7 +42,7 @@ public class MybatisPlusConfig {
     /**
      * 插件链。
      *
-     * ⚠️⚠️ **Day 13 最容易被忽略的一个细节：addInnerInterceptor 的顺序 = 执行顺序。**
+     * ⚠️⚠️ **最容易被忽略的一个细节：addInnerInterceptor 的顺序 = 执行顺序。**
      *
      * MyBatis-Plus 会按你 add 的顺序，依次调用每个 InnerInterceptor 的 beforeQuery，
      * 后一个拿到的 BoundSql 是前一个的**返回值**。所以：
@@ -62,7 +62,6 @@ public class MybatisPlusConfig {
      * 这个 bug 的形态很有意思：**数据没错，只有总数错**。
      * 接口 200、数据合法、用户翻两页就发现不对了。手册里"实验 E6"能实测出这个差异。
      *
-     * 分页插件本身的原理见 Day 3 的注释，这里不重复。
      */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor(DataScopeInnerInterceptor dataScopeInnerInterceptor) {

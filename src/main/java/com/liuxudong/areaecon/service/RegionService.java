@@ -16,7 +16,7 @@ import java.util.List;
  *   ① 职责分离：Controller 只管"接收请求、返回响应"，不该关心 SQL 怎么写；
  *   ② 复用：同一个业务逻辑可能被多个 Controller、定时任务、消息消费者调用；
  *   ③ 事务边界：@Transactional 是加在 Service 方法上的（Controller 上加不生效，这是常见坑）。
- * 面试被问"你为什么分层"，答这三条就够了。
+ * 为什么分层，三条理由：
  *
  * 【extends IService<Region> 是什么】
  * MyBatis-Plus 提供的通用 Service 接口，和 BaseMapper 一个思路：
@@ -47,21 +47,21 @@ public interface RegionService extends IService<Region> {
     Region getByCode(String regionCode);
 
     /**
-     * 【Day 6 新增】按区域编码**批量**查询。
+     * 按区域编码**批量**查询。
      *
      * 用途：统计接口查出"每个区域的汇总值"之后，拿这批编码一次性把区域名称捞回来，
      * 在 Java 里补到结果上 —— 这样统计 SQL 里就不用 JOIN dim_region 了。
      *
      * 【为什么不循环调 getByCode？N+1 问题】
      * 150 个区域就是 150 次数据库往返。批量查是 1 次。
-     * 这个坑叫 N+1 查询，是面试常问的"你项目里怎么优化性能"的经典答案之一。
+     * 这个坑叫 N+1 查询，是统计类接口最常见的性能问题之一。
      * 判断标准很简单：**看到 for 循环里写数据库查询，就要警觉。**
      *
      * @param regionCodes 区域编码集合，为空时返回空列表（不要拼出 IN () 这种非法 SQL）
      */
     List<Region> listByCodes(Collection<String> regionCodes);
 
-    // ==================== Day 3：写操作 ====================
+    // ==================== 写操作 ====================
 
     /**
      * 新增区域，返回新记录的 id（自增主键）。

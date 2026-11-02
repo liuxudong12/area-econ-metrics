@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
  * 它既能被 handleBiz 接住（精确匹配），也能被 handleException 接住（所有异常的父亲），
  * Spring 会选**最具体**的那个 —— 也就是 handleBiz。
  *
- * 面试常问："你们项目的异常怎么处理的？"
+ * 异常怎么处理，这里有一层统一兜底。
  * 标准答法：@RestControllerAdvice + 自定义 BizException + 按异常类型分流，
  * 业务异常把 message 返给用户，系统异常记 error 日志但只返回统一话术。
  */
@@ -47,7 +47,7 @@ public class GlobalExceptionHandler {
     public Result<Void> handleBizException(BizException e) {
         // 业务异常是"预期内"的，用 warn 就够了，不用 error（否则日志里全是噪音、告警会被淹没）
         log.warn("[业务异常] code={} msg={}", e.getCode(), e.getMessage());
-        // Day 13：把 code 透出去，前端才能区分 401（去登录）/ 403（没权限）/ 500（业务规则不满足）
+        // 把 code 透出去，前端才能区分 401（去登录）/ 403（没权限）/ 500（业务规则不满足）
         return Result.fail(e.getCode(), e.getMessage());
     }
 

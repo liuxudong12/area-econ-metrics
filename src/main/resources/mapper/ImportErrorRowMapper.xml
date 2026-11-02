@@ -17,7 +17,7 @@
       错误行可能有 1 万条。一条 SQL 塞 1 万个 VALUES，
       单条 SQL 几百 KB，MySQL 解析成本高、undo log 也大。
       分 500 一批，20 次往返，总耗时远低于一次塞 1 万。
-      （实测数据见 docs/00-第11天操作手册.md）
+      
     -->
     <insert id="insertBatch">
         INSERT INTO import_error_row

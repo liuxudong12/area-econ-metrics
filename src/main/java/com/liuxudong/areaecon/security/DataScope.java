@@ -22,7 +22,7 @@ import java.lang.annotation.Target;
  *                   就自动给它加 region_code 过滤。
  *   思路 B（显式）：让开发者主动标记哪条 SQL 要受权限约束。
  *
- * 我选了 B，理由有三条，都能在面试里讲：
+ * 选了 B，理由有三条：
  *
  *   ① **不是所有 SQL 都该被过滤**。比如"补区域名称"那条
  *      {@code SELECT * FROM dim_region WHERE region_code IN (...)}，
@@ -44,7 +44,7 @@ import java.lang.annotation.Target;
  * 二、alias 这个属性为什么必须有
  * ============================================================================
  * 因为同一张表在不同 SQL 里别名可以不同，而且 SQL 里经常有子查询。
- * 举个我们项目里真实存在的例子（第 6 天的 TOP N 排行）：
+ * 举本项目里真实存在的例子（TOP N 排行）：
  *
  * <pre>
  *   SELECT t.regionCode, RANK() OVER (...) FROM (

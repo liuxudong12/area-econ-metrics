@@ -62,13 +62,13 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- 参数校验，第 3 天写接口时用 -->
+        <!-- 参数校验 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- ★ Day 7：Redis。
+        <!-- ★ Redis。
              spring-boot-starter-data-redis 自带客户端实现 Lettuce（默认），
              所以这里**不需要**再单独引 lettuce-core。 -->
         <dependency>
@@ -76,10 +76,10 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- ★ Day 7：Lettuce 连接池的实现依赖，**必须显式加**。
+        <!-- ★ Lettuce 连接池的实现依赖，**必须显式加**。
              不加会怎样？—— application.yml 里写的 spring.data.redis.lettuce.pool.*
              会被**静默忽略**（不报错！），Lettuce 走它默认的"全应用复用一条连接"模式。
-             你以为配了池、其实没配，是缓存的经典假配置坑。
+             配了池却等于没配，是缓存配置里很典型的一个坑。
              判断标准很简单：启动日志里 pool 相关的配置压根不会出现。
              版本由 Spring Boot 父 POM 统一管理，不用写版本号。 -->
         <dependency>
@@ -87,15 +87,15 @@
             <artifactId>commons-pool2</artifactId>
         </dependency>
 
-        <!-- ★ Day 9：EasyExcel，阿里开源的 Excel 读写库。
-             为什么不用原生 POI？——三个原因，面试能讲：
+        <!-- ★ EasyExcel，阿里开源的 Excel 读写库。
+             为什么不用原生 POI？——三个原因：
                ① POI 的 SAX 模式要自己写 Handler、管理行号状态，代码又长又容易错；
                   EasyExcel 把它封装成"注册一个 Listener，每读到一行回调一次"。
                ② POI 默认的 XSSFWorkbook 是**全量加载到内存**的（DOM 模式）。
                   10 万行的 xlsx 能吃掉几百 MB 堆内存，直接 OOM；EasyExcel 底层走 SAX 流式读取，
                   读一行、处理一行、丢一行，内存占用与行数无关。
                ③ 它自带 @ExcelProperty 注解，列名和字段的映射不用手写 if-else。
-             版本选 3.3.4：与你公司项目（yudao 系）的版本基本一致，面试能串着讲。 -->
+             版本选 3.3.4：与主流 yudao 系脚手架保持一致，便于迁移。 -->
         <dependency>
             <groupId>com.alibaba</groupId>
             <artifactId>easyexcel</artifactId>

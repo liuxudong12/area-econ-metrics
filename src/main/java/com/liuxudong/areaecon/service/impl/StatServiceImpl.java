@@ -34,7 +34,7 @@ import java.util.Map;
  * 真要加也只读优化，可以写 @Transactional(readOnly = true)。
  *
  * ============================================================================
- * Day 6 的改动：这里多了"补区域名称"这一步
+ * 这里多了"补区域名称"这一步
  * ============================================================================
  *
  * 改造前：区域名称是 SQL 里 JOIN dim_region 查出来的。
@@ -45,14 +45,14 @@ import java.util.Map;
  *   ✓ 先聚合再关联：1350 行明细 → 先压成 150 行 → 只补 150 个名字
  * 聚合会砍掉 90% 的行，那就让它先发生。实测 44.3ms → 9.52ms。
  *
- * 【面试可能会追问：这样不是把数据库的活推给应用层了吗？】
+ * 【可能的质疑：这样不是把数据库的活推给应用层了吗？】
  * 对，但这是**有意识的取舍**，不是偷懒。三个理由：
  *   ① 应用层可以"一次查 150 个"，回表次数从 1350 降到 150，总 I/O 真的变少了；
- *   ② 区域维表只有 150 行、几乎不变，是典型的"字典数据"，本来就该往内存/缓存放（Day 7 更明显）；
+ *   ② 区域维表只有 150 行、几乎不变，是典型的"字典数据"，本来就该往内存/缓存放；
  *   ③ 拆开之后，SQL 只剩下"纯聚合"，更容易看懂、更容易单独加索引优化。
  *
  * ============================================================================
- * Day 7 的改动：四个统计方法都套上了一层 Redis 缓存
+ * 四个统计方法都套上了一层 Redis 缓存
  * ============================================================================
  *
  * 【改造手法：把每个方法一劈两半】
@@ -78,7 +78,7 @@ import java.util.Map;
  * 【今天只做"读"，"写"明天做】
  * 现在缓存只能被手动删。如果 dim_region 或 fact_indicator_value 被改了，
  * 缓存里的旧数据最多会"脏"到 TTL 到期（600 秒）。这在生产上不可接受，
- * Day 8 专门解决 —— 这正是"缓存一致性"要讲的东西。
+ * 这正是"缓存一致性"要解决的问题。
  */
 @Service
 public class StatServiceImpl implements StatService {
@@ -104,7 +104,7 @@ public class StatServiceImpl implements StatService {
      * 不会。StatServiceImpl → RegionService，而 RegionService 不依赖 StatService，没有环。
      * （真要出现 A→B→A，Spring 会启动报错，那时再考虑 @Lazy 或抽公共层。）
      *
-     * Day 7 又多了一个 StatCacheHelper —— 缓存能力的来源。
+     * 另有一个 StatCacheHelper —— 缓存能力的来源。
      * 注意它也**不反向依赖** StatService，所以同样没有环。
      */
     public StatServiceImpl(FactIndicatorValueMapper factIndicatorValueMapper,
@@ -120,7 +120,7 @@ public class StatServiceImpl implements StatService {
         // 对外只做一件事：拼 key、交给缓存助手。
         // 注意 lambda 里调的是 loadCategorySummary —— 那段查库逻辑整个搬到了下面的私有方法，
         // 一行都没改。这样"加缓存"这个动作对原有逻辑是**零风险**的。
-        // ⚠️ Day 13：key 的最后多了一段 scopeKey()。
+        // ⚠️ key 的最后多了一段 scopeKey()。
         //    原因看下面 loadCategorySummary 上方的说明 —— 缓存命中的话 SQL 根本不会执行，
         //    拦截器也就没机会改写它。**所以权限必须体现在 key 里，而不是只体现在 SQL 里。**
         String key = StatCacheHelper.buildKey(
@@ -131,7 +131,7 @@ public class StatServiceImpl implements StatService {
     }
 
     /**
-     * 原 categorySummary 的全部逻辑（Day 6 改造过的那版），现在改成私有方法。
+     * 原 categorySummary 的全部逻辑，现在改成私有方法。
      *
      * ⚠️ 注意这个方法**不要标 @Override** —— 它不在 StatService 接口里，
      *    是纯粹的内部实现细节。改成 private 而不是 public，也是为了让调用方
@@ -148,7 +148,7 @@ public class StatServiceImpl implements StatService {
         // 第三步：补名字。查不到名字的区域（已被逻辑删除）直接丢掉 ——
         // 这是为了和改造前的 SQL 语义保持一致（原 SQL 里 JOIN dim_region 时 r.deleted = 0 会把它过滤掉）。
         //
-        // ⚠️ 这段是今天最值得记住的一句话：
+        // ⚠️ 这里有一个关键判断：
         //    **改写 SQL 时，原来的 JOIN / WHERE 除了"过滤数据"，往往还偷偷承担着业务语义。**
         //    忘掉这条语义，接口的返回条数就会莫名其妙多出来几条 —— 而且不报错，只有用户会发现。
         List<RegionMetricStatVO> result = new ArrayList<>(rows.size());
@@ -176,17 +176,17 @@ public class StatServiceImpl implements StatService {
     }
 
     private List<PeriodMetricStatVO> loadCategoryTrend(String category, String periodType, List<String> periodCodes) {
-        // 就是这一行。Day 5 之前它是全表扫描 48 万行、133ms；
+        // 就是这一行。加索引之前它是全表扫描 48 万行、133ms；
         // 加完 idx_tpi 索引后，代码一个字没改，耗时降到 9.66ms。
         // 这就是"优化 SQL 和索引，而不是改代码"的典型场景。
         //
-        // Day 7 再套上缓存：索引解决"查得快"，缓存解决"根本不用查"。
+        // 再套上缓存：索引解决"查得快"，缓存解决"根本不用查"。
         // 两者是**接力**关系，不是二选一 —— 索引让未命中的那一次也不慢，
-        // 缓存让之后的 99 次不碰数据库。**面试时一定要把这两句连起来说。**
+        // 缓存让之后的 99 次不碰数据库。**这两句必须连起来看。**
         return factIndicatorValueMapper.selectPeriodTrend(category, periodType, periodCodes);
     }
 
-    // ==================== Day 6 新增 ====================
+    // ==================== 聚合统计 ====================
 
     @Override
     public List<RegionRankVO> topRegions(String category, String periodType, List<String> periodCodes, Integer topN) {
@@ -227,7 +227,7 @@ public class StatServiceImpl implements StatService {
         //    严格来说应该"多查几条再剔"，但本项目的区域维表和数据是干净的，不会命中这个分支。
         //    真实项目里如果维表可能被删，正确做法是 **在 SQL 里过滤掉已删除区域**，
         //    而不是在 Java 侧剔除 —— 因为 LIMIT 是在 SQL 里生效的。
-        //    这个取舍写在这里，面试问到能答出来就是加分项。
+        //    这个取舍写在这里，方便后来读代码的人理解。
         return result;
     }
 
@@ -314,12 +314,12 @@ public class StatServiceImpl implements StatService {
     }
 
     /**
-     * 【Day 13 新增】当前请求的"权限指纹"，用来拼进缓存 key。
+     * 当前请求的"权限指纹"，用来拼进缓存 key。
      *
-     * 这一段是整个 Day 13 里**最容易漏、后果最严重**的地方，单独讲清楚：
+     * 这一段是**最容易漏、后果最严重**的地方：
      *
      * 【为什么光有 SQL 拦截器还不够】
-     * 第 7 天给这四个接口加了缓存。缓存命中的时候，整个流程是：
+     * 这四个接口都加了缓存。缓存命中的时候，整个流程是：
      *     请求 → 拼 key → 命中 Redis → 直接返回
      *                   ↑
      *              **根本不查库，SQL 压根没执行**
@@ -331,9 +331,9 @@ public class StatServiceImpl implements StatService {
      *   ② changsha（长沙）请求同样的参数 → **同一个 key** → 命中 → 直接拿到 150 个区域
      *   ③ 长沙的管理员看到了全省数据。接口 200，日志正常，SQL 一次没跑。
      *
-     * 这不是假设，这就是第 7 天讲的那条铁律被违反的后果：
+     * 这不是假设，这是那条铁律被违反的后果：
      *      **凡是会影响 SQL 结果的入参，一个都不能漏进 key。**
-     * 第 7 天漏的是 topN，第 13 天要漏的就是"用户的数据范围"。
+     * 漏 topN 会串味，漏"用户的数据范围"会越权。
      *
      * 【为什么不能直接把 regionCode 拼进 key】
      * 因为有两种"看起来一样、结果差 48 万行"的情况：
@@ -361,7 +361,7 @@ public class StatServiceImpl implements StatService {
      * 【为什么必须"批量"，不能循环单查】
      * 150 个区域循环单查 = 150 次数据库往返，每次都有网络开销和连接开销。
      * 批量查是 1 次。这就是所谓的 **N+1 查询问题**——
-     * 面试问"你项目里怎么优化性能"时，除了索引和缓存，这是第三个标准答案。
+     * 除了索引和缓存，这是第三个可以着手的地方。
      *
      * 识别方法很简单：**看到 for 循环里写数据库查询，就要停下来想想能不能批量。**
      *

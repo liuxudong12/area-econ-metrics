@@ -4,7 +4,7 @@ package com.liuxudong.areaecon.entity;
  * 异步任务的状态常量。
  *
  * ==========================================================================
- * 【状态机（Day 10 版，加上了重试回路）】
+ * 【状态机（含重试回路）】
  * ==========================================================================
  *
  *   PENDING ──线程池抢到──→ RUNNING ──成功──→ SUCCESS
@@ -59,7 +59,7 @@ public final class AsyncTaskStatus {
     public static final String RUNNING = "RUNNING";
 
     /**
-     * Day 10 新增：失败过一次，正在等 next_retry_time 到点后自动重试。
+     * 失败过一次，正在等 next_retry_time 到点后自动重试。
      *
      * 这个状态**不会**由用户操作产生，只由后台的失败处理逻辑写入。
      */

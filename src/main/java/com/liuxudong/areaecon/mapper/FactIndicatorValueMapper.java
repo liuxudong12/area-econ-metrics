@@ -43,7 +43,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *
      * 举例：查"工业"这个分类下，2024/2025/2026 三年，每个区域的总值。
      *
-     * 【Day 6 改造：这里少 JOIN 了一张表】
+     * 【这里少 JOIN 了一张表】
      * 改造前它是 JOIN 三张表（fact + dim_indicator + dim_region），实测 44.3ms。
      * 改造后去掉了 dim_region，SQL 只负责"算数"，区域名称由 Service 侧批量补上。
      *
@@ -74,11 +74,11 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *
      * 举例：查"工业"这个分类，每年（2024/2025/2026）全省的总值，看走势。
      *
-     * ✅ Day 5 已优化：给 fact_indicator_value 补了 idx_tpi(period_type, period_code, indicator_code)，
+     * ✅ 优化：给 fact_indicator_value 补了 idx_tpi(period_type, period_code, indicator_code)，
      *    扫描行数 489,618 → 5,418，DB 耗时 133.45ms → 9.66ms。
-     *    但下面这段"它当年为什么慢"的分析照样要会讲 —— 面试考的就是这个思路。
+     *    但下面这段"它为什么慢"的分析才是关键。
      *
-     * 【为什么它比 selectCategorySummary 慢得多？—— 这句话面试能用】
+     * 【为什么它比 selectCategorySummary 慢得多？】
      * 两个查询的表结构是一样的，区别只在于：**select 和 group by 用不用 region_code**。
      *
      *   selectCategorySummary 要按区域分组 → 执行时必然涉及 region_code
@@ -100,7 +100,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
                                                @Param("periodType") String periodType,
                                                @Param("periodCodes") List<String> periodCodes);
 
-    // ==================== Day 6 新增：两个进阶统计接口 ====================
+    // ==================== 两个进阶统计接口 ====================
 
     /**
      * TOP N 区域排行（大屏"排行榜"用）。
@@ -113,7 +113,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *     selectCategorySummary  只返回 code + 总值
      *     selectTopRegions       额外算出【名次】和【占比】，并且只要前 N 条
      *
-     * 【Day 6 的新武器：窗口函数】
+     * 【窗口函数】
      *     RANK() OVER (ORDER BY totalValue DESC)           → 名次
      *     SUM(totalValue) OVER ()                          → 所有区域的总值（没 GROUP BY 的聚合）
      *     ROUND(totalValue / SUM(totalValue) OVER () * 100, 2)  → 占比
@@ -121,7 +121,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * 「OVER ()」里什么都不写 = 整个结果集当做一个窗口，这跟 GROUP BY 是**两码事**：
      *     GROUP BY 会把多行压成一行（行数变少）
      *     窗口函数**不改行数**，只是给每行多挂一列计算结果
-     * 所以你要"分组汇总后又想看到明细"，就用窗口函数 —— 这正是排行的场景。
+     * 所以"分组汇总后还想看到明细"，就用窗口函数 —— 这正是排行的场景。
      *
      * ⚠️ 为什么有个子查询 t？
      *     MySQL 不允许在 WHERE / 同一层 SELECT 里直接用 SUM() 的结果做算术后再排序取前 N，
@@ -170,13 +170,13 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
                                       @Param("basePeriod") String basePeriod,
                                       @Param("currentPeriod") String currentPeriod);
 
-    // ==================== Day 9 新增：Excel 导入的批量写入 ====================
-    // ==================== Day 10 升级：INSERT → upsert（可重入） ====================
+    // ==================== Excel 导入的批量写入 ====================
+    // ==================== INSERT → upsert（可重入） ====================
 
     /**
      * 批量写入指标值（upsert：有则更新、无则插入）。
      *
-     * 【这条 SQL 是 Day 9 性能对比 + Day 10 幂等重试的共同基础】
+     * 【这条 SQL 是性能对比与幂等重试的共同基础】
      *
      * 一、性能：一条 SQL 插 N 行，而不是 N 条 SQL 各插一行
      *   同步导入 1 万行如果用逐行插入（for 循环调 BaseMapper.insert），
@@ -191,8 +191,8 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      *     ③ 一整批失败时，500 行的重试代价远小于 1 万行。
      *     500 是工程上的经验值，不是理论最优。
      *
-     * 二、幂等：Day 10 新增 ON DUPLICATE KEY UPDATE
-     *   Day 9 的版本是纯 INSERT，导致"分批提交后失败"的任务**永远无法重试成功**：
+     * 二、幂等：ON DUPLICATE KEY UPDATE
+     *   最初的版本是纯 INSERT，导致"分批提交后失败"的任务**永远无法重试成功**：
      *   前 10 批已经落库，重试时第 1 批就撞 uk_fact → 整批回滚 → 无限失败。
      *
      *   改成 upsert 之后，重复写入变成"重置为最新值"，跑 1 遍和跑 100 遍结果一致。
@@ -222,7 +222,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      */
     int insertBatch(@Param("list") List<FactIndicatorValue> list);
 
-    // ==================== Day 12 新增：导出（游标分页） ====================
+    // ==================== 导出（游标分页） ====================
 
     /**
      * 按筛选条件数一共多少行 —— 导出前的"可行性检查"。
@@ -270,7 +270,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
                                                      @Param("lastId") Long lastId,
                                                      @Param("limit") int limit);
 
-    // ==================== Day 13 新增：分页（用来验证插件顺序） ====================
+    // ==================== 分页（用来验证插件顺序） ====================
 
     /**
      * 分页查询指标值明细 —— 这个方法是专门为"验证插件顺序"加的。
@@ -288,7 +288,7 @@ public interface FactIndicatorValueMapper extends BaseMapper<FactIndicatorValue>
      * **别名要不要写，取决于 SQL 里有没有第二张表 —— 不是取决于习惯。**
      *
      * 【⚠️ @Select 手写 SQL 必须自己写 deleted = 0】
-     * 这条规律从第 5 天讲到第 13 天，凡是手写 SQL 都躲不掉 @TableLogic 不生效这件事。
+     * 凡是手写 SQL 都躲不掉 @TableLogic 不生效这件事。
      *
      * 【分页参数怎么传】
      * MP 规定：方法第一个参数是 {@code IPage}，且返回值是 {@code IPage} 或 {@code List}。

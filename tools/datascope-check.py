@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Day 13 数据权限一键验证脚本。
+数据权限一键验证脚本。
 
 用法：
     python tools/datascope-check.py                  # 默认 127.0.0.1:18080

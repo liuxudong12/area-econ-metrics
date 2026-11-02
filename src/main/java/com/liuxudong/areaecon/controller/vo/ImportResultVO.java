@@ -38,14 +38,14 @@ public class ImportResultVO {
     /** 错误明细（最多几条，避免响应体过大） */
     private List<String> errors;
 
-    /** 本次操作耗时（毫秒）。面试时这个数字就是"为什么要异步"的证据 */
+    /** 本次操作耗时（毫秒）。这个数字就是"为什么要异步"的证据 */
     private Long elapsedMs;
 
     /** 本次实际使用的批大小：1 = 逐行插入，500 = 批量插入。用来做性能对比实验 */
     private Integer batchSize;
 
     /**
-     * Day 10 新增：已重试次数。
+     * 已重试次数。
      *
      * 为什么要把这个暴露给前端？
      * 因为"失败 1 次后自动重试"和"失败 3 次即将放弃"是**完全不同的用户预期**。
@@ -55,7 +55,7 @@ public class ImportResultVO {
     private Integer retryCount;
 
     /**
-     * Day 10 新增：下次重试的时间点（只有 RETRY_WAIT 状态有值）。
+     * 下次重试的时间点（只有 RETRY_WAIT 状态有值）。
      *
      * 前端可以据此显示倒计时："3 秒后自动重试"。
      * 比笼统的"请稍候"体验好得多 —— **能给出确定的等待时长，用户就不会焦虑。**
@@ -63,7 +63,7 @@ public class ImportResultVO {
     private LocalDateTime nextRetryTime;
 
     /**
-     * Day 11 新增：错误报告是否可下载。
+     * 错误报告是否可下载。
      *
      * 只有"有错误明细"的失败任务才是 true。
      * 为什么不让前端自己判断（errorRows > 0）？
@@ -74,7 +74,7 @@ public class ImportResultVO {
     private Boolean errorReportAvailable;
 
     /**
-     * Day 11 新增：错误报告下载地址。
+     * 错误报告下载地址。
      *
      * 直接给完整路径，前端拿来实现"下载"按钮即可 —— 不用自己拼 taskId、
      * 也不用知道是 /api/import 还是 /import。**接口地址变了只改后端一处。**

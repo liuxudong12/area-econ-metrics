@@ -24,7 +24,7 @@ import java.time.LocalDateTime;
  *
  * 落库之后，任务有了**持久化的身份**：
  *   - 用户随时能查到"我那个任务到底怎么样了"
- *   - 服务重启后，可以扫描 PENDING / RUNNING 的"僵尸任务"重新投递（Day 10 做）
+ *   - 服务重启后，可以扫描 PENDING / RUNNING 的"僵尸任务"重新投递
  *   - 出问题时有据可查：谁、什么时候、导了多少行、错在哪
  *
  * 一句话：**线程池只是"干活的"，任务表才是"记账的"。记账必须在数据库里。**
@@ -41,7 +41,7 @@ import java.time.LocalDateTime;
  *   只有唯一索引能兜住。后提交的那个会抛 DuplicateKeyException，被我们捕获后转成
  *   "该文件已存在任务"。
  *
- * 面试时这句可以直接说：
+ * 这里的分工可以概括成一句：
  *   "我先用业务查询做第一道幂等，再用唯一索引做第二道兜底。
  *    只靠查是不够的 —— 查和插之间有窗口，高并发下必然会重复。"
  */
@@ -67,7 +67,7 @@ public class AsyncTask {
     /** 状态：PENDING / RUNNING / SUCCESS / FAILED，取值见 AsyncTaskStatus */
     private String status;
 
-    /** 已重试次数（Day 10 用） */
+    /** 已重试次数 */
     private Integer retryCount;
 
     /** 解析出的总行数 */
@@ -77,7 +77,7 @@ public class AsyncTask {
     private Integer successRows;
 
     /**
-     * Day 11：校验失败的行数（真实总数）。
+     * 校验失败的行数（真实总数）。
      *
      * 【为什么它不能只用 count(import_error_row) 得到】
      * 因为错误明细有条数上限（默认 10000）。一个有 5 万行错误的文件，
@@ -91,7 +91,7 @@ public class AsyncTask {
     /** 失败原因。VARCHAR(1000)，所以写错误信息时要注意截断，别超长 */
     private String errorMsg;
 
-    /** 下次重试时间（Day 10 的指数退避用） */
+    /** 下次重试时间（指数退避用） */
     private LocalDateTime nextRetryTime;
 
     private LocalDateTime createTime;

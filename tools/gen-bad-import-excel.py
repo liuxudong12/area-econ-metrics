@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-生成「含错误行」的 Excel 测试数据（Day 11）。
+生成「含错误行」的 Excel 测试数据。
 
 【为什么需要这个文件】
-Day 9/Day 10 的测试文件是"全对"的 —— 那种文件只能验证"导入成功"这条happy path。
+此前几个测试文件都是"全对"的 —— 那种文件只能验证"导入成功"这条happy path。
 但真实世界里，用户上传的表**大概率有错**，而且一错就是几千行。
 今天要验证的正是这条路径：错 3000 行的时候，系统能不能让用户自己修好。
 
@@ -78,7 +78,7 @@ def build_rows():
         "ORDER BY i.indicator_code")]
 
     if not regions or not indicators:
-        print("区域或指标为空，先跑 Day 3 的初始化脚本", file=sys.stderr)
+        print("区域或指标为空，先跑初始化脚本", file=sys.stderr)
         sys.exit(1)
 
     random.seed(SEED)

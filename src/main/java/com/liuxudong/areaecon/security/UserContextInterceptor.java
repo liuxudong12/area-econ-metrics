@@ -41,7 +41,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * 请求头是客户端可以随便改的：用 Postman 把 X-User-Id 从 3 改成 1，
  * 立刻就是省厅管理员的权限。所以这个方案只用于"把注意力集中在权限过滤逻辑上"。
  *
- * 真实项目里"当前用户"只有三种可靠来源（面试可以答这一段）：
+ * 真实项目里"当前用户"只有三种可靠来源：
  *   ① JWT：token 用服务端密钥签名，改一个字节就验签失败；用户信息在 token 里，不用查库；
  *   ② Session：服务端存，客户端只拿一个随机 sessionId，伪造不了；
  *   ③ OAuth2 / 企业 SSO：交给统一认证中心，业务系统只验 token。

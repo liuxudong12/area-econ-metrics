@@ -46,10 +46,10 @@ import java.util.function.Consumer;
  *
  * 对比一下：如果用 POI 的 XSSFWorkbook 或 EasyExcel 的 doReadSync() 一次性读成 List，
  * 10 万行的对象全堆在堆内存里，几百 MB 起步，很容易 OOM。
- * 这就是"流式处理"和"全量加载"的区别，也是面试常问的点。
+ * 这就是"流式处理"和"全量加载"的区别。
  *
  * ==========================================================================
- * 【Day 11 改造：错误明细从"5 条字符串"变成"结构化对象"】
+ * 【错误明细从"5 条字符串"变成"结构化对象"】
  * ==========================================================================
  * 改造前：errors 是 List&lt;String&gt;，最多存 5 条（MAX_ERRORS=5）。
  *   一个 1 万行、3000 行有错的文件，用户只能看到 5 条，
@@ -85,7 +85,7 @@ public class FactImportListener extends AnalysisEventListener<FactImportRow> {
     private final List<FactImportRow> buffer = new ArrayList<>();
 
     /**
-     * 错误明细最多收集多少条（Day 11 从硬编码 5 改成可配置，默认 10000）。
+     * 错误明细最多收集多少条（从硬编码 5 改成可配置，默认 10000）。
      *
      * 【为什么还要设上限？直接不限量不行吗】
      * 一个 10 万行全错的文件会产生 10 万条错误记录：
@@ -236,7 +236,7 @@ public class FactImportListener extends AnalysisEventListener<FactImportRow> {
      *   早期版本我把所有异常都吞了，结果数据库挂了的时候导入"成功结束"、
      *   报告 0 行导入 —— 这才是最危险的：静默失败比报错可怕得多。
      *
-     * 【Day 11 改进：转换失败时也要拿到整行原貌】
+     * 【转换失败时也要拿到整行原貌】
      * 这条路径上 EasyExcel 没构造出 FactImportRow 对象，
      * 所以用 {@link #rawText} 从原始单元格里抠值（靠 headerIndex 定位列）。
      */
@@ -296,7 +296,7 @@ public class FactImportListener extends AnalysisEventListener<FactImportRow> {
     /**
      * 单行校验。返回 null 表示通过，否则返回错误类型。
      *
-     * 【Day 11 的改动：返回值从 String（错误消息）变成 ImportErrorType（错误类型）】
+     * 【返回值从 String（错误消息）变成 ImportErrorType（错误类型）】
      *
      * 这不是"为了用枚举而用枚举"。改造前，错误信息是一句话，无法聚合；
      * 改造后有了类型，才能回答"3000 行错误里，哪一类最多"这个问题。
